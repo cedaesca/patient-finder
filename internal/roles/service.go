@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/cedaesca/patient-finder/internal/contracts"
+	"github.com/cedaesca/patient-finder/internal/permissions"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,6 +27,8 @@ type RolesService interface {
 	GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error)
 	GetUserPermissions(ctx context.Context, userID uuid.UUID) ([]string, error)
 	ListRoles(ctx context.Context) ([]Role, error)
+	GetRoleByName(ctx context.Context, name string) (*Role, error)
+	HasPermission(ctx context.Context, userID uuid.UUID, perm permissions.Code, centerID *uuid.UUID) (bool, error)
 }
 
 type rolesService struct {
@@ -127,6 +130,48 @@ func (s *rolesService) GetUserPermissions(ctx context.Context, userID uuid.UUID)
 		return nil, fmt.Errorf("get user permissions: %w", err)
 	}
 	return perms, nil
+}
+
+func (s *rolesService) HasPermission(ctx context.Context, userID uuid.UUID, perm permissions.Code, centerID *uuid.UUID) (bool, error) {
+	tracer := otel.Tracer(serviceTracerName)
+	ctx, span := tracer.Start(ctx, "HasPermission")
+	defer span.End()
+	span.SetAttributes(
+		attribute.String("user.id", userID.String()),
+		attribute.String("perm", string(perm)),
+	)
+
+	if centerID == nil {
+		ok, err := s.store.HasPermission(ctx, userID, string(perm))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "check permission failure")
+			return false, fmt.Errorf("has permission: %w", err)
+		}
+		return ok, nil
+	}
+
+	ok, err := s.store.HasPermissionForCenter(ctx, userID, string(perm), *centerID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission for center failure")
+		return false, fmt.Errorf("has permission: %w", err)
+	}
+	return ok, nil
+}
+
+func (s *rolesService) GetRoleByName(ctx context.Context, name string) (*Role, error) {
+	tracer := otel.Tracer(serviceTracerName)
+	ctx, span := tracer.Start(ctx, "GetRoleByName")
+	defer span.End()
+
+	role, err := s.store.GetRoleByName(ctx, name)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get role by name failure")
+		return nil, fmt.Errorf("get role by name: %w", err)
+	}
+	return role, nil
 }
 
 func (s *rolesService) ListRoles(ctx context.Context) ([]Role, error) {

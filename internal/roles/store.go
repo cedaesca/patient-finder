@@ -39,6 +39,8 @@ type RolesStore interface {
 	GetUserPermissions(ctx context.Context, userID uuid.UUID) ([]string, error)
 	ListRoles(ctx context.Context) ([]Role, error)
 	GetRoleByName(ctx context.Context, name string) (*Role, error)
+	HasPermission(ctx context.Context, userID uuid.UUID, perm string) (bool, error)
+	HasPermissionForCenter(ctx context.Context, userID uuid.UUID, perm string, centerID uuid.UUID) (bool, error)
 }
 
 type PostgresRolesStore struct {
@@ -237,6 +239,55 @@ func (s *PostgresRolesStore) ListRoles(ctx context.Context) ([]Role, error) {
 		result = []Role{}
 	}
 	return result, nil
+}
+
+func (s *PostgresRolesStore) HasPermission(ctx context.Context, userID uuid.UUID, perm string) (bool, error) {
+	const query = `
+		SELECT EXISTS(
+			SELECT 1 FROM user_roles ur
+			JOIN role_permissions rp ON rp.role_id = ur.role_id
+			WHERE ur.user_id = $1 AND rp.permission_slug = $2 AND ur.center_id IS NULL
+		)`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "HasPermission")
+	defer span.End()
+	database.TagOtelTrace(span, "user_roles", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var exists bool
+	err := exec.QueryRowContext(ctx, query, userID, perm).Scan(&exists)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *PostgresRolesStore) HasPermissionForCenter(ctx context.Context, userID uuid.UUID, perm string, centerID uuid.UUID) (bool, error) {
+	const query = `
+		SELECT EXISTS(
+			SELECT 1 FROM user_roles ur
+			JOIN role_permissions rp ON rp.role_id = ur.role_id
+			WHERE ur.user_id = $1 AND rp.permission_slug = $2
+			  AND (ur.center_id IS NULL OR ur.center_id = $3)
+		)`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "HasPermissionForCenter")
+	defer span.End()
+	database.TagOtelTrace(span, "user_roles", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var exists bool
+	err := exec.QueryRowContext(ctx, query, userID, perm, centerID).Scan(&exists)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission for center failure")
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *PostgresRolesStore) GetRoleByName(ctx context.Context, name string) (*Role, error) {
