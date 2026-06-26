@@ -146,6 +146,18 @@ func main() {
 			sourceID = strings.TrimSpace(row[0])
 		}
 
+		var exists bool
+		err := db.QueryRowContext(ctx,
+			"SELECT EXISTS(SELECT 1 FROM persons WHERE source=$1 AND source_id=$2 AND deleted_at IS NULL)",
+			source, sourceID).Scan(&exists)
+		if err != nil {
+			slog.Warn("check duplicate", "source_id", sourceID, "err", err)
+		}
+		if exists {
+			skipped++
+			continue
+		}
+
 		input := persons.CreatePersonInput{
 			FirstName:         firstName,
 			LastName:          lastName,
