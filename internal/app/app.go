@@ -16,7 +16,8 @@ func NewApplication(db *sql.DB) *Application {
 	app := &Application{db: db}
 
 	app.InitStores()
-	app.InitServices()
+	engine := app.initSearchEngine()
+	app.InitServices(engine)
 	app.InitMiddlewares()
 	app.InitHandlers()
 

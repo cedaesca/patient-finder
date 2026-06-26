@@ -13,4 +13,9 @@ const (
 	// Logging
 	LogLevelKey  = "LOG_LEVEL"
 	LogFormatKey = "LOG_FORMAT"
+
+	// Typesense
+	TypesenseHostKey = "TYPESENSE_HOST"
+	TypesensePortKey = "TYPESENSE_PORT"
+	TypesenseAPIKey  = "TYPESENSE_API_KEY"
 )
