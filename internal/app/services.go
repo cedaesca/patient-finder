@@ -33,6 +33,7 @@ func (a *Application) InitServices(searchEngine search.Engine) {
 	)
 
 	transactor := database.NewPostgresTransactor(a.db)
+	rolesService := roles.NewRolesService(a.Stores.Roles())
 
 	usersService := users.NewUsersService(
 		a.Stores.Users(),
@@ -46,7 +47,6 @@ func (a *Application) InitServices(searchEngine search.Engine) {
 	geographyService := geography.NewGeographyService(a.Stores.Geography())
 	centersService := centers.NewCentersService(a.Stores.Centers())
 	personsService := persons.NewPersonsService(a.Stores.Persons(), searchEngine)
-	rolesService := roles.NewRolesService(a.Stores.Roles())
 
 	a.Services = Services{
 		Auth:      authService,

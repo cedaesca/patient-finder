@@ -20,13 +20,16 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type permissionChecker interface {
+const adminRoleName = "admin"
+
+type rolesGuard interface {
 	HasPermission(ctx context.Context, userID uuid.UUID, perm permissions.Code, centerID *uuid.UUID) (bool, error)
+	HasRole(ctx context.Context, userID uuid.UUID, roleName string) (bool, error)
 }
 
 type Handler struct {
 	service    UsersService
-	roles      permissionChecker
+	guard      rolesGuard
 	validate   *validator.Validate
 	limitersOn bool
 }
@@ -55,10 +58,10 @@ type UpdateUserRequest struct {
 	Email    *string `json:"email" validate:"omitempty,email"`
 }
 
-func NewHandler(service UsersService, roles permissionChecker) *Handler {
+func NewHandler(service UsersService, guard rolesGuard) *Handler {
 	return &Handler{
 		service:    service,
-		roles:      roles,
+		guard:      guard,
 		validate:   utils.NewValidator(),
 		limitersOn: !utils.EnvIsTruthy(utils.DisableRateLimitingEnvVar),
 	}
@@ -268,7 +271,7 @@ func (h *Handler) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersCreate, nil)
+	ok, err := h.guard.HasPermission(ctx, actorID, permissions.UsersCreate, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "check permission failure")
@@ -341,7 +344,7 @@ func (h *Handler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersRead, nil)
+	ok, err := h.guard.HasPermission(ctx, actorID, permissions.UsersRead, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "check permission failure")
@@ -385,7 +388,7 @@ func (h *Handler) HandleGetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersRead, nil)
+	ok, err := h.guard.HasPermission(ctx, actorID, permissions.UsersRead, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "check permission failure")
@@ -436,7 +439,7 @@ func (h *Handler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersUpdate, nil)
+	ok, err := h.guard.HasPermission(ctx, actorID, permissions.UsersUpdate, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "check permission failure")
@@ -454,6 +457,21 @@ func (h *Handler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		span.SetStatus(codes.Error, "invalid id param")
 		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid user id"})
 		return
+	}
+
+	if actorID != id {
+		isAdmin, err := h.guard.HasRole(ctx, id, adminRoleName)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "check admin role failure")
+			slog.ErrorContext(ctx, "HandleUpdateUser", "err", err)
+			utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+			return
+		}
+		if isAdmin {
+			utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": "cannot modify an admin user"})
+			return
+		}
 	}
 
 	var req UpdateUserRequest
@@ -515,7 +533,7 @@ func (h *Handler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersDelete, nil)
+	ok, err := h.guard.HasPermission(ctx, actorID, permissions.UsersDelete, nil)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "check permission failure")
@@ -535,6 +553,21 @@ func (h *Handler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if actorID != id {
+		isAdmin, err := h.guard.HasRole(ctx, id, adminRoleName)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "check admin role failure")
+			slog.ErrorContext(ctx, "HandleDeleteUser", "err", err)
+			utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+			return
+		}
+		if isAdmin {
+			utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": "cannot delete an admin user"})
+			return
+		}
+	}
+
 	if err := h.service.DeleteUser(ctx, id, actorID); err != nil {
 		if errors.Is(err, contracts.ErrNotFound) {
 			span.SetStatus(codes.Error, "user not found")
@@ -550,6 +583,180 @@ func (h *Handler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- Role handlers ---
+
+func (h *Handler) HandleGetMyRoles(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("GET /users/me/roles")
+
+	userID := request.GetUserID(ctx)
+	if userID == uuid.Nil {
+		span.SetStatus(codes.Error, "missing authenticated user")
+		slog.ErrorContext(ctx, "HandleGetMyRoles: missing authenticated user")
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	roles, err := h.service.GetUserRoles(ctx, userID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get my roles failure")
+		slog.ErrorContext(ctx, "HandleGetMyRoles", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataResponse(w, http.StatusOK, utils.ResponseData{
+		"roles": roles,
+	})
+}
+
+func (h *Handler) HandleGetUserRoles(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("GET /users/{id}/roles")
+
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	ok, err := h.guard.HasPermission(ctx, actorID, permissions.UsersRead, nil)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		slog.ErrorContext(ctx, "HandleGetUserRoles", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !ok {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
+		return
+	}
+
+	id, err := request.ReadIDParam(r, "id")
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid id param")
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid user id"})
+		return
+	}
+
+	roles, err := h.service.GetUserRoles(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get user roles failure")
+		slog.ErrorContext(ctx, "HandleGetUserRoles", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataResponse(w, http.StatusOK, utils.ResponseData{
+		"roles": roles,
+	})
+}
+
+type replaceUserRolesRequest struct {
+	Roles []struct {
+		RoleName string     `json:"role_name"`
+		CenterID *uuid.UUID `json:"center_id,omitempty"`
+	} `json:"roles"`
+}
+
+func (h *Handler) HandleReplaceUserRoles(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("PUT /users/{id}/roles")
+
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	id, err := request.ReadIDParam(r, "id")
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid id param")
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid user id"})
+		return
+	}
+
+	ok, err := h.guard.HasPermission(ctx, actorID, permissions.UsersUpdate, nil)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		slog.ErrorContext(ctx, "HandleReplaceUserRoles", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !ok {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
+		return
+	}
+
+	if actorID != id {
+		isAdmin, err := h.guard.HasRole(ctx, id, adminRoleName)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "check admin role failure")
+			slog.ErrorContext(ctx, "HandleReplaceUserRoles", "err", err)
+			utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+			return
+		}
+		if isAdmin {
+			utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": "cannot modify roles of an admin user"})
+			return
+		}
+	}
+
+	var req replaceUserRolesRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid request payload")
+		slog.ErrorContext(ctx, "HandleReplaceUserRoles decode payload", "err", err)
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid request payload"})
+		return
+	}
+
+	assignments := make([]RoleAssignment, len(req.Roles))
+	for i, rr := range req.Roles {
+		assignments[i] = RoleAssignment{
+			RoleName: rr.RoleName,
+			CenterID: rr.CenterID,
+		}
+	}
+
+	if err := h.service.ReplaceUserRoles(ctx, id, assignments); err != nil {
+		if errors.Is(err, contracts.ErrNotFound) {
+			utils.WriteJSON(w, http.StatusNotFound, utils.Envelope{"message": "user or role not found"})
+			return
+		}
+		if errors.Is(err, ErrGlobalRoleWithCenter) || errors.Is(err, ErrCenterRoleWithoutID) {
+			utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": err.Error()})
+			return
+		}
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "replace user roles failure")
+		slog.ErrorContext(ctx, "HandleReplaceUserRoles", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	newRoles, err := h.service.GetUserRoles(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get updated roles failure")
+		slog.ErrorContext(ctx, "HandleReplaceUserRoles get updated", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataResponse(w, http.StatusOK, utils.ResponseData{
+		"roles": newRoles,
+	})
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
@@ -581,11 +788,18 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 		r.With(otpLimiters...).Post("/me/password/otp", h.HandleCreatePasswordOtp)
 		r.With(updatePwdLimiters...).Post("/me/password", h.HandleUpdatePassword)
 
-		// CRUD (permissions will be gated later)
+		// Self-service roles
+		r.Get("/me/roles", h.HandleGetMyRoles)
+
+		// CRUD
 		r.Post("/", h.HandleCreateUser)
 		r.Get("/", h.HandleListUsers)
 		r.Get("/{id}", h.HandleGetUser)
 		r.Put("/{id}", h.HandleUpdateUser)
 		r.Delete("/{id}", h.HandleDeleteUser)
+
+		// User roles
+		r.Get("/{id}/roles", h.HandleGetUserRoles)
+		r.Put("/{id}/roles", h.HandleReplaceUserRoles)
 	})
 }

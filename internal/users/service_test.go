@@ -116,6 +116,11 @@ func (m *userStoreMock) UpdateUserPassword(ctx context.Context, id uuid.UUID, pa
 	return nil
 }
 
+func (m *userStoreMock) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error) { return nil, nil }
+func (m *userStoreMock) RemoveAllUserRoles(ctx context.Context, userID uuid.UUID) error { return nil }
+func (m *userStoreMock) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, centerID *uuid.UUID) error { return nil }
+func (m *userStoreMock) GetRoleInfo(ctx context.Context, name string) (*RoleInfo, error) { return nil, nil }
+
 func (m *userStoreMock) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	if m.getUserByIDFn != nil {
 		return m.getUserByIDFn(ctx, id)
@@ -137,7 +142,7 @@ func TestUsersService_GetUserByID(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, user)
-		require.Equal(t, userID, userID)
+		require.Equal(t, userID, user.ID)
 		require.Equal(t, "user@example.com", user.Email)
 	})
 

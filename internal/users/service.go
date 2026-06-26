@@ -3,6 +3,7 @@ package users
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/cedaesca/patient-finder/internal/audit"
@@ -47,6 +48,8 @@ type UsersService interface {
 	ListUsers(ctx context.Context, filters pagination.Filters) ([]User, pagination.Metadata, error)
 	AdminUpdateUser(ctx context.Context, id uuid.UUID, input AdminUpdateUserInput, actorID uuid.UUID) (*User, error)
 	DeleteUser(ctx context.Context, id uuid.UUID, actorID uuid.UUID) error
+	GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error)
+	ReplaceUserRoles(ctx context.Context, userID uuid.UUID, assignments []RoleAssignment) error
 }
 
 type UpdateUserInput struct {
@@ -121,32 +124,61 @@ func (s *usersService) UpdateUser(ctx context.Context, id uuid.UUID, input Updat
 	ctx, span := tracer.Start(ctx, "UpdateUser")
 	defer span.End()
 
-	user, err := s.userStore.GetUserByID(ctx, id)
+	var updatedUser *User
+	err := s.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		user, err := s.userStore.GetUserByID(txCtx, id)
+		if err != nil {
+			return err
+		}
+		if user == nil {
+			return contracts.ErrNotFound
+		}
+
+		beforeData := map[string]any{
+			"name":      user.Name,
+			"last_name": user.LastName,
+		}
+
+		if input.Name != nil {
+			user.Name = *input.Name
+		}
+		if input.LastName != nil {
+			user.LastName = *input.LastName
+		}
+
+		if err := s.userStore.UpdateUser(txCtx, user); err != nil {
+			return err
+		}
+
+		afterData := map[string]any{
+			"name":      user.Name,
+			"last_name": user.LastName,
+		}
+
+		event := &audit.Event{
+			UserID:       &id,
+			Action:       audit.ActionUpdate,
+			ResourceType: "user",
+			ResourceID:   &user.ID,
+			BeforeData:   beforeData,
+			AfterData:    afterData,
+		}
+
+		if err := s.auditStore.Insert(txCtx, event, beforeData, afterData); err != nil {
+			return err
+		}
+
+		updatedUser = user
+		return nil
+	})
+
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "get user by id failure")
-		return nil, err
-	}
-
-	if user == nil {
-		return nil, contracts.ErrNotFound
-	}
-
-	if input.Name != nil {
-		user.Name = *input.Name
-	}
-
-	if input.LastName != nil {
-		user.LastName = *input.LastName
-	}
-
-	if err := s.userStore.UpdateUser(ctx, user); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "update user failure")
 		return nil, err
 	}
 
-	return user, nil
+	return updatedUser, nil
 }
 
 func (s *usersService) StartLoggedInUserPasswordOtp(ctx context.Context, id uuid.UUID) error {
@@ -181,57 +213,63 @@ func (s *usersService) UpdateLoggedInUserPassword(ctx context.Context, id uuid.U
 	ctx, span := tracer.Start(ctx, "UpdateLoggedInUserPassword")
 	defer span.End()
 
-	user, err := s.userStore.GetUserByID(ctx, id)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "get user by id failure")
-		return err
-	}
-
-	if user == nil {
-		return contracts.ErrNotFound
-	}
-
-	match, err := user.PasswordHash.Matches(input.CurrentPassword)
-	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "password comparison failure")
-		return err
-	}
-
-	if !match {
-		return ErrInvalidCurrentPassword
-	}
-
-	if err := s.otpService.VerifyAndConsume(ctx, user.Email, input.Otp, otp.EmailOtpPurposePasswordChange); err != nil {
-		if errors.Is(err, otp.ErrInvalidOtp) {
-			return ErrInvalidPasswordChangeOtp
+	err := s.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		user, err := s.userStore.GetUserByID(txCtx, id)
+		if err != nil {
+			return err
 		}
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "otp verification failure")
-		return err
-	}
+		if user == nil {
+			return contracts.ErrNotFound
+		}
 
-	var newPw password
-	if err := newPw.Set(input.NewPassword); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "hash password failure")
-		return err
-	}
+		match, err := user.PasswordHash.Matches(input.CurrentPassword)
+		if err != nil {
+			return err
+		}
+		if !match {
+			return ErrInvalidCurrentPassword
+		}
 
-	if err := s.userStore.UpdateUserPassword(ctx, id, newPw.hash); err != nil {
+		if err := s.otpService.VerifyAndConsume(txCtx, user.Email, input.Otp, otp.EmailOtpPurposePasswordChange); err != nil {
+			if errors.Is(err, otp.ErrInvalidOtp) {
+				return ErrInvalidPasswordChangeOtp
+			}
+			return err
+		}
+
+		var newPw password
+		if err := newPw.Set(input.NewPassword); err != nil {
+			return err
+		}
+
+		if err := s.userStore.UpdateUserPassword(txCtx, id, newPw.hash); err != nil {
+			return err
+		}
+
+		if err := s.refreshTokenStore.RevokeAllByUserID(txCtx, id); err != nil {
+			return err
+		}
+
+		event := &audit.Event{
+			UserID:     &id,
+			Action:     audit.ActionUpdate,
+			ResourceType: "user",
+			ResourceID: &id,
+		}
+
+		if err := s.auditStore.Insert(txCtx, event, nil, nil); err != nil {
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "update password failure")
-		return err
 	}
 
-	if err := s.refreshTokenStore.RevokeAllByUserID(ctx, id); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "revoke refresh tokens failure")
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func (s *usersService) CreateUser(ctx context.Context, input CreateUserInput, actorID uuid.UUID) (*User, error) {
@@ -370,6 +408,75 @@ func (s *usersService) AdminUpdateUser(ctx context.Context, id uuid.UUID, input 
 	}
 
 	return updatedUser, nil
+}
+
+func (s *usersService) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error) {
+	tracer := otel.Tracer(usersServiceTracerName)
+	ctx, span := tracer.Start(ctx, "GetUserRoles")
+	defer span.End()
+
+	roles, err := s.userStore.GetUserRoles(ctx, userID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get user roles failure")
+		return nil, err
+	}
+	return roles, nil
+}
+
+func (s *usersService) ReplaceUserRoles(ctx context.Context, userID uuid.UUID, assignments []RoleAssignment) error {
+	tracer := otel.Tracer(usersServiceTracerName)
+	ctx, span := tracer.Start(ctx, "ReplaceUserRoles")
+	defer span.End()
+
+	// Validate all assignments before mutating
+	for _, a := range assignments {
+		info, err := s.userStore.GetRoleInfo(ctx, a.RoleName)
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "lookup role failure")
+			return fmt.Errorf("replace user roles: %w", err)
+		}
+		if info == nil {
+			return fmt.Errorf("replace user roles: role %q not found", a.RoleName)
+		}
+		if info.IsGlobal && a.CenterID != nil {
+			return ErrGlobalRoleWithCenter
+		}
+		if !info.IsGlobal && a.CenterID == nil {
+			return ErrCenterRoleWithoutID
+		}
+	}
+
+	return s.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.userStore.RemoveAllUserRoles(txCtx, userID); err != nil {
+			return err
+		}
+		for _, a := range assignments {
+			info, err := s.userStore.GetRoleInfo(txCtx, a.RoleName)
+			if err != nil {
+				return err
+			}
+			if info == nil {
+				return fmt.Errorf("replace user roles: role %q not found", a.RoleName)
+			}
+			if err := s.userStore.AssignUserRole(txCtx, userID, info.ID, a.CenterID); err != nil {
+				return err
+			}
+		}
+
+		event := &audit.Event{
+			UserID:       &userID,
+			Action:       audit.ActionUpdate,
+			ResourceType: "user",
+			ResourceID:   &userID,
+		}
+		if err := s.auditStore.Insert(txCtx, event, nil, nil); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 func (s *usersService) DeleteUser(ctx context.Context, id uuid.UUID, actorID uuid.UUID) error {
