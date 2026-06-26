@@ -1,0 +1,11 @@
+.git
+.github
+.air.toml
+.env
+.env.*
+tmp
+data
+deploy
+docs/openapi/dist
+main.exe
+*.log

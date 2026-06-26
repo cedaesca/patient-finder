@@ -1,0 +1,116 @@
+// Alloy config (dev) — Docker logs → OTLP → otel-collector → New Relic.
+// El uso de componentes loki.* es solo el bridge interno; no hay un Loki real.
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "10s"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=patient-finder-api"]
+  }
+}
+
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Self-exclusion: no scrape el propio Alloy (evita feedback loop sobre
+  // sus propios warnings cuando el otel-collector se atraganta).
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "alloy"
+    action        = "drop"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+}
+
+loki.source.docker "all" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.app.receiver]
+  labels     = { env = "dev" }
+}
+
+loki.process "app" {
+  forward_to = [otelcol.receiver.loki.bridge.receiver]
+
+  stage.json {
+    expressions = {
+      level      = "level",
+      msg        = "msg",
+      trace_id   = "trace_id",
+      span_id    = "span_id",
+      request_id = "request_id",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+
+  stage.structured_metadata {
+    values = {
+      trace_id   = "",
+      span_id    = "",
+      request_id = "",
+    }
+  }
+}
+
+otelcol.receiver.loki "bridge" {
+  output {
+    logs = [otelcol.processor.batch.default.input]
+  }
+}
+
+otelcol.processor.batch "default" {
+  output {
+    logs = [otelcol.exporter.otlp.collector.input]
+  }
+}
+
+otelcol.exporter.otlp "collector" {
+  timeout = "30s"
+
+  client {
+    endpoint = "otel-collector:4317"
+    tls {
+      insecure = true
+    }
+  }
+
+  sending_queue {
+    enabled       = true
+    num_consumers = 4
+    queue_size    = 1000
+  }
+
+  retry_on_failure {
+    enabled          = true
+    initial_interval = "5s"
+    max_interval     = "30s"
+    max_elapsed_time = "5m"
+  }
+}

@@ -1,0 +1,124 @@
+name: patient-finder-api
+
+services:
+  migrate:
+    image: registry.patient-finder.com/patient-finder/patient-finder-api:${API_IMAGE_TAG:-latest}
+    restart: "no"
+    env_file:
+      - .env
+    entrypoint: []
+    command:
+      - sh
+      - -c
+      - /app/goose -dir /app/migrations postgres "$$DATABASE_URL" up
+    depends_on:
+      psql:
+        condition: service_healthy
+
+  api:
+    image: registry.patient-finder.com/patient-finder/patient-finder-api:${API_IMAGE_TAG:-latest}
+    container_name: patient-finder-api
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      APP_ENV: staging
+      PORT: 8080
+      DB_HOST: psql
+      DB_PORT: 5432
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      CENTRIFUGO_API_URL: http://centrifugo:8000/api
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+    depends_on:
+      psql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
+      centrifugo:
+        condition: service_started
+      mailpit:
+        condition: service_started
+    networks:
+      - default
+      - proxy
+
+  psql:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - psql_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector:0.105.0
+    restart: unless-stopped
+    environment:
+      NEW_RELIC_API_KEY: ${NEW_RELIC_API_KEY}
+      NEW_RELIC_OTLP_ENDPOINT: ${NEW_RELIC_OTLP_ENDPOINT}
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otelcol/config.yaml:ro
+
+  alloy:
+    image: grafana/alloy:latest
+    restart: unless-stopped
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.staging.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      otel-collector:
+        condition: service_started
+
+  centrifugo:
+    image: centrifugo/centrifugo:v6.7
+    container_name: patient-finder-centrifugo
+    restart: unless-stopped
+    command: centrifugo
+    environment:
+      CENTRIFUGO_CLIENT_TOKEN_HMAC_SECRET_KEY: ${CENTRIFUGO_TOKEN_HMAC_SECRET}
+      CENTRIFUGO_HTTP_API_KEY: ${CENTRIFUGO_API_KEY}
+      CENTRIFUGO_ADMIN_ENABLED: "false"
+      CENTRIFUGO_CLIENT_ALLOWED_ORIGINS: ${CENTRIFUGO_ALLOWED_ORIGINS:-https://app.patient-finder.com}
+      CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_ALLOW_SUBSCRIBE_FOR_CLIENT: "true"
+      CENTRIFUGO_CHANNEL_WITHOUT_NAMESPACE_ALLOW_USER_LIMITED_CHANNELS: "true"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    networks:
+      - default
+      - proxy
+
+  mailpit:
+    image: axllent/mailpit:v1.20
+    restart: unless-stopped
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_DATABASE: /data/mailpit.db
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    volumes:
+      - mailpit_data:/data
+
+volumes:
+  psql_data:
+  mailpit_data:
+
+networks:
+  proxy:
+    external: true
+    name: proxy
