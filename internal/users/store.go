@@ -19,9 +19,11 @@ const userStoreTracerName = "UserStore"
 const userStoreTable = "users"
 
 var (
-	ErrDuplicateName     = errors.New("name already exists")
-	ErrDuplicateLastName = errors.New("last name already exists")
-	ErrDuplicateEmail    = errors.New("email already exists")
+	ErrDuplicateName        = errors.New("name already exists")
+	ErrDuplicateLastName    = errors.New("last name already exists")
+	ErrDuplicateEmail       = errors.New("email already exists")
+	ErrGlobalRoleWithCenter = errors.New("cannot assign a global role to a specific center")
+	ErrCenterRoleWithoutID  = errors.New("cannot assign a per-center role without a center id")
 )
 
 type password struct {
@@ -54,6 +56,25 @@ func (p *password) Matches(plaintextPassword string) (bool, error) {
 	return true, nil
 }
 
+type UserRole struct {
+	UserID    uuid.UUID  `json:"user_id"`
+	RoleID    uuid.UUID  `json:"role_id"`
+	RoleName  string     `json:"role_name"`
+	IsGlobal  bool       `json:"is_global"`
+	CenterID  *uuid.UUID `json:"center_id"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type RoleAssignment struct {
+	RoleName string     `json:"role_name"`
+	CenterID *uuid.UUID `json:"center_id,omitempty"`
+}
+
+type RoleInfo struct {
+	ID       uuid.UUID
+	IsGlobal bool
+}
+
 type User struct {
 	ID             uuid.UUID  `json:"id"`
 	Name           string     `json:"name"`
@@ -74,6 +95,10 @@ type UserStore interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
 	ListUsers(ctx context.Context, f pagination.Filters) ([]User, int, error)
 	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
+	GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error)
+	RemoveAllUserRoles(ctx context.Context, userID uuid.UUID) error
+	AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, centerID *uuid.UUID) error
+	GetRoleInfo(ctx context.Context, name string) (*RoleInfo, error)
 }
 
 type PostgresUserStore struct {
@@ -344,6 +369,110 @@ func (s *PostgresUserStore) ListUsers(ctx context.Context, f pagination.Filters)
 	}
 
 	return result, total, nil
+}
+
+func (s *PostgresUserStore) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error) {
+	const query = `
+		SELECT ur.user_id, ur.role_id, r.name, r.is_global, ur.center_id, ur.created_at
+		FROM user_roles ur
+		JOIN roles r ON r.id = ur.role_id
+		WHERE ur.user_id = $1
+		ORDER BY r.name`
+
+	tracer := otel.Tracer(userStoreTracerName)
+	ctx, span := tracer.Start(ctx, "GetUserRoles")
+	defer span.End()
+	database.TagOtelTrace(span, "user_roles", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	rows, err := exec.QueryContext(ctx, query, userID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get user roles failure")
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []UserRole
+	for rows.Next() {
+		var r UserRole
+		if err := rows.Scan(&r.UserID, &r.RoleID, &r.RoleName, &r.IsGlobal, &r.CenterID, &r.CreatedAt); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "scan user role failure")
+			return nil, err
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "iterate user roles failure")
+		return nil, err
+	}
+	if result == nil {
+		result = []UserRole{}
+	}
+	return result, nil
+}
+
+func (s *PostgresUserStore) RemoveAllUserRoles(ctx context.Context, userID uuid.UUID) error {
+	const query = `DELETE FROM user_roles WHERE user_id = $1`
+
+	tracer := otel.Tracer(userStoreTracerName)
+	ctx, span := tracer.Start(ctx, "RemoveAllUserRoles")
+	defer span.End()
+	database.TagOtelTrace(span, "user_roles", "DELETE", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	_, err := exec.ExecContext(ctx, query, userID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "remove all user roles failure")
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresUserStore) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, centerID *uuid.UUID) error {
+	const query = `
+		INSERT INTO user_roles (user_id, role_id, center_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT DO NOTHING`
+
+	tracer := otel.Tracer(userStoreTracerName)
+	ctx, span := tracer.Start(ctx, "AssignUserRole")
+	defer span.End()
+	database.TagOtelTrace(span, "user_roles", "INSERT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	_, err := exec.ExecContext(ctx, query, userID, roleID, centerID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "assign user role failure")
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresUserStore) GetRoleInfo(ctx context.Context, name string) (*RoleInfo, error) {
+	const query = `SELECT id, is_global FROM roles WHERE name = $1`
+
+	tracer := otel.Tracer(userStoreTracerName)
+	ctx, span := tracer.Start(ctx, "GetRoleInfo")
+	defer span.End()
+	database.TagOtelTrace(span, "roles", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var r RoleInfo
+	err := exec.QueryRowContext(ctx, query, name).Scan(&r.ID, &r.IsGlobal)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get role info failure")
+		return nil, err
+	}
+	return &r, nil
 }
 
 func (s *PostgresUserStore) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {

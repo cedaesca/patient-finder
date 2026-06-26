@@ -18,10 +18,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type alwaysAllowChecker struct{}
+type alwaysAllowGuard struct{}
 
-func (alwaysAllowChecker) HasPermission(_ context.Context, _ uuid.UUID, _ permissions.Code, _ *uuid.UUID) (bool, error) {
+func (alwaysAllowGuard) HasPermission(_ context.Context, _ uuid.UUID, _ permissions.Code, _ *uuid.UUID) (bool, error) {
 	return true, nil
+}
+
+func (alwaysAllowGuard) HasRole(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+	return false, nil
 }
 
 type usersServiceMock struct {
@@ -34,6 +38,8 @@ type usersServiceMock struct {
 	listUsersFn                  func(ctx context.Context, filters pagination.Filters) ([]User, pagination.Metadata, error)
 	adminUpdateUserFn            func(ctx context.Context, id uuid.UUID, input AdminUpdateUserInput, actorID uuid.UUID) (*User, error)
 	deleteUserFn                 func(ctx context.Context, id uuid.UUID, actorID uuid.UUID) error
+	getUserRolesFn               func(ctx context.Context, userID uuid.UUID) ([]UserRole, error)
+	replaceUserRolesFn           func(ctx context.Context, userID uuid.UUID, assignments []RoleAssignment) error
 }
 
 func (m *usersServiceMock) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
@@ -104,8 +110,22 @@ func (m *usersServiceMock) DeleteUser(ctx context.Context, id uuid.UUID, actorID
 	return nil
 }
 
+func (m *usersServiceMock) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error) {
+	if m.getUserRolesFn != nil {
+		return m.getUserRolesFn(ctx, userID)
+	}
+	return nil, nil
+}
+
+func (m *usersServiceMock) ReplaceUserRoles(ctx context.Context, userID uuid.UUID, assignments []RoleAssignment) error {
+	if m.replaceUserRolesFn != nil {
+		return m.replaceUserRolesFn(ctx, userID, assignments)
+	}
+	return nil
+}
+
 func newTestUsersHandler(service UsersService) *Handler {
-	return NewHandler(service, alwaysAllowChecker{})
+	return NewHandler(service, alwaysAllowGuard{})
 }
 
 func TestUsersHandler_HandleGetMe(t *testing.T) {

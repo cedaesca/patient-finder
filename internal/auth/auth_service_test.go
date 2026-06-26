@@ -583,6 +583,22 @@ func (m *userStoreMock) SoftDeleteUser(ctx context.Context, id uuid.UUID) error 
 	panic("SoftDeleteUser called unexpectedly")
 }
 
+func (m *userStoreMock) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]users.UserRole, error) {
+	panic("GetUserRoles called unexpectedly")
+}
+
+func (m *userStoreMock) RemoveAllUserRoles(ctx context.Context, userID uuid.UUID) error {
+	panic("RemoveAllUserRoles called unexpectedly")
+}
+
+func (m *userStoreMock) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, centerID *uuid.UUID) error {
+	panic("AssignUserRole called unexpectedly")
+}
+
+func (m *userStoreMock) GetRoleInfo(ctx context.Context, name string) (*users.RoleInfo, error) {
+	panic("GetRoleInfo called unexpectedly")
+}
+
 type refreshTokenStoreMock struct {
 	insertFn         func(context.Context, *RefreshToken) error
 	getTokenByHashFn func(context.Context, string) (*RefreshToken, error)
