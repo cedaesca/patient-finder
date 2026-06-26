@@ -103,4 +103,11 @@ prod-search-reindex-all: require-prod-host
 prod-compose-config:
 	@docker compose -f deploy/prod/docker-compose.prod.yaml config >/dev/null && echo "OK: deploy/prod/docker-compose.prod.yaml is valid"
 
-.PHONY: all build run test clean watch docker-run docker-down itest migration migration-run migration-refresh db-cli prod-scp-excel prod-import prod-search-reindex prod-search-reindex-all prod-compose-config require-prod-host
+# --- Bootstrap admin -------------------------------------------
+bootadmin:
+	@go run cmd/bootadmin/main.go
+
+prod-bootadmin: require-prod-host
+	@ssh -t "$(PROD_SSH_HOST)" "cd $(PROD_REMOTE_DIR) && docker compose exec api /app/bootadmin"
+
+.PHONY: all build run test clean watch docker-run docker-down itest migration migration-run migration-refresh db-cli prod-scp-excel prod-import prod-search-reindex prod-search-reindex-all prod-compose-config require-prod-host bootadmin prod-bootadmin
