@@ -3,14 +3,16 @@ package app
 import (
 	"github.com/cedaesca/patient-finder/internal/audit"
 	"github.com/cedaesca/patient-finder/internal/auth"
+	"github.com/cedaesca/patient-finder/internal/geography"
 	"github.com/cedaesca/patient-finder/internal/otp"
 	"github.com/cedaesca/patient-finder/internal/users"
 )
 
 type Services struct {
-	Auth  auth.AuthService
-	Users users.UsersService
-	Audit audit.AuditService
+	Auth      auth.AuthService
+	Users     users.UsersService
+	Audit     audit.AuditService
+	Geography geography.GeographyService
 }
 
 func (a *Application) InitServices() {
@@ -29,10 +31,12 @@ func (a *Application) InitServices() {
 	)
 
 	auditService := audit.NewAuditService(a.Stores.Audit())
+	geographyService := geography.NewGeographyService(a.Stores.Geography())
 
 	a.Services = Services{
-		Auth:  authService,
-		Users: usersService,
-		Audit: auditService,
+		Auth:      authService,
+		Users:     usersService,
+		Audit:     auditService,
+		Geography: geographyService,
 	}
 }
