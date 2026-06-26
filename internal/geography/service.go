@@ -16,10 +16,15 @@ const geographyServiceTracerName = "GeographyService"
 type GeographyService interface {
 	ListEstados(ctx context.Context) ([]Estado, error)
 	GetEstadoByID(ctx context.Context, id uuid.UUID) (*Estado, error)
+	EstadoExists(ctx context.Context, id uuid.UUID) (bool, error)
 	ListMunicipiosByEstado(ctx context.Context, estadoID uuid.UUID) ([]Municipio, error)
 	GetMunicipioByID(ctx context.Context, id uuid.UUID) (*Municipio, error)
+	MunicipioExists(ctx context.Context, id uuid.UUID) (bool, error)
+	MunicipioBelongsToEstado(ctx context.Context, municipioID, estadoID uuid.UUID) (bool, error)
 	ListParroquiasByMunicipio(ctx context.Context, municipioID uuid.UUID) ([]Parroquia, error)
 	GetParroquiaByID(ctx context.Context, id uuid.UUID) (*Parroquia, error)
+	ParroquiaExists(ctx context.Context, id uuid.UUID) (bool, error)
+	ParroquiaBelongsToMunicipio(ctx context.Context, parroquiaID, municipioID uuid.UUID) (bool, error)
 }
 
 var _ GeographyService = (*geographyService)(nil)
@@ -117,6 +122,81 @@ func (s *geographyService) ListParroquiasByMunicipio(ctx context.Context, munici
 	}
 
 	return result, nil
+}
+
+func (s *geographyService) EstadoExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	tracer := otel.Tracer(geographyServiceTracerName)
+	ctx, span := tracer.Start(ctx, "EstadoExists")
+	defer span.End()
+	span.SetAttributes(attribute.String("estado.id", id.String()))
+
+	ok, err := s.store.EstadoExists(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check estado exists failure")
+		return false, fmt.Errorf("estado exists: %w", err)
+	}
+	return ok, nil
+}
+
+func (s *geographyService) MunicipioExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	tracer := otel.Tracer(geographyServiceTracerName)
+	ctx, span := tracer.Start(ctx, "MunicipioExists")
+	defer span.End()
+	span.SetAttributes(attribute.String("municipio.id", id.String()))
+
+	ok, err := s.store.MunicipioExists(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check municipio exists failure")
+		return false, fmt.Errorf("municipio exists: %w", err)
+	}
+	return ok, nil
+}
+
+func (s *geographyService) MunicipioBelongsToEstado(ctx context.Context, municipioID, estadoID uuid.UUID) (bool, error) {
+	tracer := otel.Tracer(geographyServiceTracerName)
+	ctx, span := tracer.Start(ctx, "MunicipioBelongsToEstado")
+	defer span.End()
+	span.SetAttributes(attribute.String("municipio.id", municipioID.String()), attribute.String("estado.id", estadoID.String()))
+
+	ok, err := s.store.MunicipioBelongsToEstado(ctx, municipioID, estadoID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check municipio belongs to estado failure")
+		return false, fmt.Errorf("municipio belongs to estado: %w", err)
+	}
+	return ok, nil
+}
+
+func (s *geographyService) ParroquiaBelongsToMunicipio(ctx context.Context, parroquiaID, municipioID uuid.UUID) (bool, error) {
+	tracer := otel.Tracer(geographyServiceTracerName)
+	ctx, span := tracer.Start(ctx, "ParroquiaBelongsToMunicipio")
+	defer span.End()
+	span.SetAttributes(attribute.String("parroquia.id", parroquiaID.String()), attribute.String("municipio.id", municipioID.String()))
+
+	ok, err := s.store.ParroquiaBelongsToMunicipio(ctx, parroquiaID, municipioID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check parroquia belongs to municipio failure")
+		return false, fmt.Errorf("parroquia belongs to municipio: %w", err)
+	}
+	return ok, nil
+}
+
+func (s *geographyService) ParroquiaExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	tracer := otel.Tracer(geographyServiceTracerName)
+	ctx, span := tracer.Start(ctx, "ParroquiaExists")
+	defer span.End()
+	span.SetAttributes(attribute.String("parroquia.id", id.String()))
+
+	ok, err := s.store.ParroquiaExists(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check parroquia exists failure")
+		return false, fmt.Errorf("parroquia exists: %w", err)
+	}
+	return ok, nil
 }
 
 func (s *geographyService) GetParroquiaByID(ctx context.Context, id uuid.UUID) (*Parroquia, error) {

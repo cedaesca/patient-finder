@@ -33,10 +33,15 @@ type Parroquia struct {
 type GeographyStore interface {
 	ListEstados(ctx context.Context) ([]Estado, error)
 	GetEstadoByID(ctx context.Context, id uuid.UUID) (*Estado, error)
+	EstadoExists(ctx context.Context, id uuid.UUID) (bool, error)
 	ListMunicipiosByEstado(ctx context.Context, estadoID uuid.UUID) ([]Municipio, error)
 	GetMunicipioByID(ctx context.Context, id uuid.UUID) (*Municipio, error)
+	MunicipioExists(ctx context.Context, id uuid.UUID) (bool, error)
+	MunicipioBelongsToEstado(ctx context.Context, municipioID, estadoID uuid.UUID) (bool, error)
 	ListParroquiasByMunicipio(ctx context.Context, municipioID uuid.UUID) ([]Parroquia, error)
 	GetParroquiaByID(ctx context.Context, id uuid.UUID) (*Parroquia, error)
+	ParroquiaExists(ctx context.Context, id uuid.UUID) (bool, error)
+	ParroquiaBelongsToMunicipio(ctx context.Context, parroquiaID, municipioID uuid.UUID) (bool, error)
 }
 
 type PostgresGeographyStore struct {
@@ -194,6 +199,96 @@ func (s *PostgresGeographyStore) ListParroquiasByMunicipio(ctx context.Context, 
 	}
 
 	return result, nil
+}
+
+func (s *PostgresGeographyStore) EstadoExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	const query = `SELECT EXISTS(SELECT 1 FROM estados WHERE id = $1)`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "EstadoExists")
+	defer span.End()
+	database.TagOtelTrace(span, "estados", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var exists bool
+	err := exec.QueryRowContext(ctx, query, id).Scan(&exists)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check estado exists failure")
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *PostgresGeographyStore) MunicipioExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	const query = `SELECT EXISTS(SELECT 1 FROM municipios WHERE id = $1)`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "MunicipioExists")
+	defer span.End()
+	database.TagOtelTrace(span, "municipios", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var exists bool
+	err := exec.QueryRowContext(ctx, query, id).Scan(&exists)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check municipio exists failure")
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *PostgresGeographyStore) MunicipioBelongsToEstado(ctx context.Context, municipioID, estadoID uuid.UUID) (bool, error) {
+	const query = `SELECT EXISTS(SELECT 1 FROM municipios WHERE id = $1 AND estado_id = $2)`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "MunicipioBelongsToEstado")
+	defer span.End()
+	database.TagOtelTrace(span, "municipios", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var exists bool
+	err := exec.QueryRowContext(ctx, query, municipioID, estadoID).Scan(&exists)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check municipio belongs to estado failure")
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *PostgresGeographyStore) ParroquiaBelongsToMunicipio(ctx context.Context, parroquiaID, municipioID uuid.UUID) (bool, error) {
+	const query = `SELECT EXISTS(SELECT 1 FROM parroquias WHERE id = $1 AND municipio_id = $2)`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "ParroquiaBelongsToMunicipio")
+	defer span.End()
+	database.TagOtelTrace(span, "parroquias", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var exists bool
+	err := exec.QueryRowContext(ctx, query, parroquiaID, municipioID).Scan(&exists)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check parroquia belongs to municipio failure")
+		return false, err
+	}
+	return exists, nil
+}
+
+func (s *PostgresGeographyStore) ParroquiaExists(ctx context.Context, id uuid.UUID) (bool, error) {
+	const query = `SELECT EXISTS(SELECT 1 FROM parroquias WHERE id = $1)`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "ParroquiaExists")
+	defer span.End()
+	database.TagOtelTrace(span, "parroquias", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var exists bool
+	err := exec.QueryRowContext(ctx, query, id).Scan(&exists)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check parroquia exists failure")
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *PostgresGeographyStore) GetParroquiaByID(ctx context.Context, id uuid.UUID) (*Parroquia, error) {

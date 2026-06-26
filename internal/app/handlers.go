@@ -26,7 +26,7 @@ func (a *Application) InitHandlers() {
 	rolesHandler := roles.NewHandler(a.Services.Roles)
 	auditHandler := audit.NewAuditHandler(a.Services.Audit)
 	geographyHandler := geography.NewGeographyHandler(a.Services.Geography)
-	centersHandler := centers.NewCentersHandler(a.Services.Centers)
+	centersHandler := centers.NewCentersHandler(a.Services.Centers, a.Services.Roles)
 	personsHandler := persons.NewPersonsHandler(a.Services.Persons)
 
 	a.Handlers = Handlers{
