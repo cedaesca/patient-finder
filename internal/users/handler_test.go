@@ -12,10 +12,17 @@ import (
 	"github.com/google/uuid"
 	"github.com/cedaesca/patient-finder/internal/contracts"
 	"github.com/cedaesca/patient-finder/internal/pagination"
+	"github.com/cedaesca/patient-finder/internal/permissions"
 	"github.com/cedaesca/patient-finder/internal/request"
 	"github.com/cedaesca/patient-finder/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
+
+type alwaysAllowChecker struct{}
+
+func (alwaysAllowChecker) HasPermission(_ context.Context, _ uuid.UUID, _ permissions.Code, _ *uuid.UUID) (bool, error) {
+	return true, nil
+}
 
 type usersServiceMock struct {
 	getUserByIDFn                func(ctx context.Context, id uuid.UUID) (*User, error)
@@ -98,7 +105,7 @@ func (m *usersServiceMock) DeleteUser(ctx context.Context, id uuid.UUID, actorID
 }
 
 func newTestUsersHandler(service UsersService) *Handler {
-	return NewHandler(service)
+	return NewHandler(service, alwaysAllowChecker{})
 }
 
 func TestUsersHandler_HandleGetMe(t *testing.T) {

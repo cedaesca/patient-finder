@@ -1,6 +1,7 @@
 package users
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -12,14 +13,20 @@ import (
 	"github.com/google/uuid"
 	"github.com/cedaesca/patient-finder/internal/contracts"
 	"github.com/cedaesca/patient-finder/internal/pagination"
+	"github.com/cedaesca/patient-finder/internal/permissions"
 	"github.com/cedaesca/patient-finder/internal/request"
 	"github.com/cedaesca/patient-finder/internal/utils"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
+type permissionChecker interface {
+	HasPermission(ctx context.Context, userID uuid.UUID, perm permissions.Code, centerID *uuid.UUID) (bool, error)
+}
+
 type Handler struct {
 	service    UsersService
+	roles      permissionChecker
 	validate   *validator.Validate
 	limitersOn bool
 }
@@ -48,9 +55,10 @@ type UpdateUserRequest struct {
 	Email    *string `json:"email" validate:"omitempty,email"`
 }
 
-func NewHandler(service UsersService) *Handler {
+func NewHandler(service UsersService, roles permissionChecker) *Handler {
 	return &Handler{
 		service:    service,
+		roles:      roles,
 		validate:   utils.NewValidator(),
 		limitersOn: !utils.EnvIsTruthy(utils.DisableRateLimitingEnvVar),
 	}
@@ -260,6 +268,19 @@ func (h *Handler) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersCreate, nil)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		slog.ErrorContext(ctx, "HandleCreateUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !ok {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
+		return
+	}
+
 	var req CreateUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		span.RecordError(err)
@@ -314,8 +335,22 @@ func (h *Handler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
 	span := trace.SpanFromContext(ctx)
 	span.SetName("GET /users")
 
-	if _, err := request.RequiredUserID(ctx); err != nil {
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
 		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersRead, nil)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		slog.ErrorContext(ctx, "HandleListUsers", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !ok {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
 		return
 	}
 
@@ -344,8 +379,22 @@ func (h *Handler) HandleGetUser(w http.ResponseWriter, r *http.Request) {
 	span := trace.SpanFromContext(ctx)
 	span.SetName("GET /users/{id}")
 
-	if _, err := request.RequiredUserID(ctx); err != nil {
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
 		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersRead, nil)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		slog.ErrorContext(ctx, "HandleGetUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !ok {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
 		return
 	}
 
@@ -384,6 +433,19 @@ func (h *Handler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	actorID, err := request.RequiredUserID(ctx)
 	if err != nil {
 		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersUpdate, nil)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		slog.ErrorContext(ctx, "HandleUpdateUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !ok {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
 		return
 	}
 
@@ -450,6 +512,19 @@ func (h *Handler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	actorID, err := request.RequiredUserID(ctx)
 	if err != nil {
 		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	ok, err := h.roles.HasPermission(ctx, actorID, permissions.UsersDelete, nil)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "check permission failure")
+		slog.ErrorContext(ctx, "HandleDeleteUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !ok {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
 		return
 	}
 
