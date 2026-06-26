@@ -75,4 +75,32 @@ else
 	fi
 endif
 
-.PHONY: all build run test clean watch docker-run docker-down itest migration migration-run migration-refresh db-cli
+# --- Production remote ops ------------------------------------------------
+PROD_REMOTE_DIR ?= /opt/apps/patient-finder
+PROD_EXCEL ?= pacientes.xlsx
+
+-include .env
+
+require-prod-host:
+	@if [ -z "$(PROD_SSH_HOST)" ]; then \
+		echo "Error: PROD_SSH_HOST no esta definida en .env (ej. PROD_SSH_HOST=lupicrm-vps-deploy)"; \
+		exit 1; \
+	fi
+
+prod-scp-excel: require-prod-host
+	@scp "$(PROD_EXCEL)" "$(PROD_SSH_HOST):$(PROD_REMOTE_DIR)/"
+
+prod-import: require-prod-host
+	@ssh "$(PROD_SSH_HOST)" "cd $(PROD_REMOTE_DIR) && docker compose run --rm import"
+
+prod-search-reindex: require-prod-host
+	@if [ -z "$(COLLECTION)" ]; then echo "Usage: make prod-search-reindex COLLECTION=persons"; exit 1; fi
+	@ssh "$(PROD_SSH_HOST)" "cd $(PROD_REMOTE_DIR) && docker compose exec -T api /app/api search:reindex $(COLLECTION)"
+
+prod-search-reindex-all: require-prod-host
+	@ssh "$(PROD_SSH_HOST)" "cd $(PROD_REMOTE_DIR) && docker compose exec -T api /app/api search:reindex --all"
+
+prod-compose-config:
+	@docker compose -f deploy/prod/docker-compose.prod.yaml config >/dev/null && echo "OK: deploy/prod/docker-compose.prod.yaml is valid"
+
+.PHONY: all build run test clean watch docker-run docker-down itest migration migration-run migration-refresh db-cli prod-scp-excel prod-import prod-search-reindex prod-search-reindex-all prod-compose-config require-prod-host
