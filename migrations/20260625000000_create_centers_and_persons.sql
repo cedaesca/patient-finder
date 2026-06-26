@@ -28,6 +28,7 @@ CREATE TABLE persons (
     rescue_parroquia_id UUID REFERENCES parroquias(id),
     center_id UUID NOT NULL REFERENCES centers(id),
     contacts JSONB,
+    admitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     notes TEXT NOT NULL DEFAULT '',
     created_by UUID NOT NULL REFERENCES users(id),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

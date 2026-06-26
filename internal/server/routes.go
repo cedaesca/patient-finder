@@ -102,6 +102,8 @@ func (s *Server) registerPublicRoutes(r chi.Router) {
 
 	s.app.Handlers.Auth.RegisterRoutes(r)
 	s.app.Handlers.Geography.RegisterRoutes(r)
+	s.app.Handlers.Centers.RegisterRoutes(r)
+	s.app.Handlers.Persons.RegisterRoutes(r)
 }
 
 func (s *Server) registerPrivateRoutes(r chi.Router) {
