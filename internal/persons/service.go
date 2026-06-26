@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/cedaesca/patient-finder/internal/audit"
 	"github.com/cedaesca/patient-finder/internal/contracts"
+	"github.com/cedaesca/patient-finder/internal/database"
 	"github.com/cedaesca/patient-finder/internal/search"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
@@ -17,6 +19,8 @@ import (
 )
 
 const serviceTracerName = "PersonsService"
+
+var ErrInvalidGeography = errors.New("invalid rescue geography reference")
 
 type CenterSummary struct {
 	ID       uuid.UUID `json:"id"`
@@ -76,12 +80,20 @@ type UpdatePersonInput struct {
 	Notes             *string    `json:"notes"`
 }
 
+type GeographyExistsChecker interface {
+	EstadoExists(ctx context.Context, id uuid.UUID) (bool, error)
+	MunicipioExists(ctx context.Context, id uuid.UUID) (bool, error)
+	MunicipioBelongsToEstado(ctx context.Context, municipioID, estadoID uuid.UUID) (bool, error)
+	ParroquiaExists(ctx context.Context, id uuid.UUID) (bool, error)
+	ParroquiaBelongsToMunicipio(ctx context.Context, parroquiaID, municipioID uuid.UUID) (bool, error)
+}
+
 type PersonsService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error)
 	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error)
 	Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error)
-	Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput) (*PersonResponse, error)
-	SoftDelete(ctx context.Context, id uuid.UUID) error
+	Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput, actorID uuid.UUID, expectedCenterID *uuid.UUID) (*PersonResponse, error)
+	SoftDelete(ctx context.Context, id uuid.UUID, actorID uuid.UUID, expectedCenterID *uuid.UUID) error
 }
 
 type SearchFilters struct {
@@ -94,10 +106,19 @@ type SearchFilters struct {
 type personsService struct {
 	store        PersonsStore
 	searchEngine search.Engine
+	transactor   database.Transactor
+	auditStore   audit.AuditStore
+	geoExists    GeographyExistsChecker
 }
 
-func NewPersonsService(store PersonsStore, searchEngine search.Engine) PersonsService {
-	return &personsService{store: store, searchEngine: searchEngine}
+func NewPersonsService(store PersonsStore, searchEngine search.Engine, transactor database.Transactor, auditStore audit.AuditStore, geoExists GeographyExistsChecker) PersonsService {
+	return &personsService{
+		store:        store,
+		searchEngine: searchEngine,
+		transactor:   transactor,
+		auditStore:   auditStore,
+		geoExists:    geoExists,
+	}
 }
 
 func (s *personsService) GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error) {
@@ -210,35 +231,75 @@ func (s *personsService) Create(ctx context.Context, input CreatePersonInput, cr
 		span.SetAttributes(attribute.String("created_by", createdBy.String()))
 	}
 
-	person := &Person{
-		FirstName:         input.FirstName,
-		LastName:          input.LastName,
-		Cedula:            input.Cedula,
-		Sex:               input.Sex,
-		AgeApprox:         input.AgeApprox,
-		Status:            input.Status,
-		AdmittedAt:        input.AdmittedAt,
-		RescueEstadoID:    input.RescueEstadoID,
-		RescueMunicipioID: input.RescueMunicipioID,
-		RescueParroquiaID: input.RescueParroquiaID,
-		CenterID:          input.CenterID,
-		Contacts:          input.Contacts,
-		Notes:             input.Notes,
-		CreatedBy:         createdBy,
-		Source:            input.Source,
-		SourceID:          input.SourceID,
-	}
-	if person.AdmittedAt.IsZero() {
-		person.AdmittedAt = time.Now()
-	}
-	if person.Status == "" {
-		person.Status = "hospitalized"
-	}
+	var person *Person
 
-	if err := s.store.Create(ctx, person); err != nil {
+	err := s.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		if err := s.validateGeography(txCtx, input.RescueEstadoID, input.RescueMunicipioID, input.RescueParroquiaID); err != nil {
+			return err
+		}
+
+		p := &Person{
+			FirstName:         input.FirstName,
+			LastName:          input.LastName,
+			Cedula:            input.Cedula,
+			Sex:               input.Sex,
+			AgeApprox:         input.AgeApprox,
+			Status:            input.Status,
+			AdmittedAt:        input.AdmittedAt,
+			RescueEstadoID:    input.RescueEstadoID,
+			RescueMunicipioID: input.RescueMunicipioID,
+			RescueParroquiaID: input.RescueParroquiaID,
+			CenterID:          input.CenterID,
+			Contacts:          input.Contacts,
+			Notes:             input.Notes,
+			CreatedBy:         createdBy,
+			Source:            input.Source,
+			SourceID:          input.SourceID,
+		}
+		if p.AdmittedAt.IsZero() {
+			p.AdmittedAt = time.Now()
+		}
+		if p.Status == "" {
+			p.Status = "hospitalized"
+		}
+
+		if err := s.store.Create(txCtx, p); err != nil {
+			return err
+		}
+
+		afterData := map[string]any{
+			"first_name":           p.FirstName,
+			"last_name":            p.LastName,
+			"cedula":               p.Cedula,
+			"sex":                  p.Sex,
+			"age_approx":           p.AgeApprox,
+			"status":               p.Status,
+			"center_id":            p.CenterID,
+			"rescue_estado_id":     p.RescueEstadoID,
+			"rescue_municipio_id":  p.RescueMunicipioID,
+			"rescue_parroquia_id":  p.RescueParroquiaID,
+		}
+
+		event := &audit.Event{
+			UserID:       createdBy,
+			Action:       audit.ActionCreate,
+			ResourceType: "person",
+			ResourceID:   &p.ID,
+			AfterData:    afterData,
+		}
+
+		if err := s.auditStore.Insert(txCtx, event, nil, afterData); err != nil {
+			return err
+		}
+
+		person = p
+		return nil
+	})
+
+	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "create person failure")
-		return nil, fmt.Errorf("create person: %w", err)
+		return nil, err
 	}
 
 	if s.searchEngine != nil {
@@ -251,71 +312,133 @@ func (s *personsService) Create(ctx context.Context, input CreatePersonInput, cr
 	return s.GetByID(ctx, person.ID)
 }
 
-func (s *personsService) Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput) (*PersonResponse, error) {
+func (s *personsService) Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput, actorID uuid.UUID, expectedCenterID *uuid.UUID) (*PersonResponse, error) {
 	tracer := otel.Tracer(serviceTracerName)
 	ctx, span := tracer.Start(ctx, "UpdatePerson")
 	defer span.End()
 	span.SetAttributes(attribute.String("person.id", id.String()))
 
-	row, err := s.store.GetByID(ctx, id)
+	var updatedPerson *Person
+
+	err := s.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		row, err := s.store.GetByID(txCtx, id)
+		if err != nil {
+			return fmt.Errorf("update person: %w", err)
+		}
+		if row == nil {
+			return fmt.Errorf("update person: %w", contracts.ErrNotFound)
+		}
+
+		if expectedCenterID != nil && row.CenterID != *expectedCenterID {
+			return fmt.Errorf("update person: %w", contracts.ErrNotFound)
+		}
+
+		person := &row.Person
+		beforeData := map[string]any{
+			"first_name":           person.FirstName,
+			"last_name":            person.LastName,
+			"cedula":               person.Cedula,
+			"sex":                  person.Sex,
+			"age_approx":           person.AgeApprox,
+			"status":               person.Status,
+			"center_id":            person.CenterID,
+			"rescue_estado_id":     person.RescueEstadoID,
+			"rescue_municipio_id":  person.RescueMunicipioID,
+			"rescue_parroquia_id":  person.RescueParroquiaID,
+			"contacts":             person.Contacts,
+			"notes":                person.Notes,
+		}
+
+		if input.FirstName != nil {
+			person.FirstName = input.FirstName
+		}
+		if input.LastName != nil {
+			person.LastName = input.LastName
+		}
+		if input.Cedula != nil {
+			person.Cedula = input.Cedula
+		}
+		if input.Sex != nil {
+			person.Sex = input.Sex
+		}
+		if input.AgeApprox != nil {
+			person.AgeApprox = input.AgeApprox
+		}
+		if input.Status != nil {
+			person.Status = *input.Status
+		}
+		if input.RescueEstadoID != nil {
+			person.RescueEstadoID = *input.RescueEstadoID
+		}
+		if input.RescueMunicipioID != nil {
+			person.RescueMunicipioID = *input.RescueMunicipioID
+		}
+		if input.RescueParroquiaID != nil {
+			person.RescueParroquiaID = input.RescueParroquiaID
+		}
+		if input.CenterID != nil {
+			person.CenterID = *input.CenterID
+		}
+		if input.Contacts != nil {
+			person.Contacts = input.Contacts
+		}
+		if input.Notes != nil {
+			person.Notes = *input.Notes
+		}
+
+		if input.RescueEstadoID != nil || input.RescueMunicipioID != nil || input.RescueParroquiaID != nil {
+			if err := s.validateGeography(txCtx, person.RescueEstadoID, person.RescueMunicipioID, person.RescueParroquiaID); err != nil {
+				return err
+			}
+		}
+
+		if err := s.store.Update(txCtx, person); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("update person: %w", contracts.ErrNotFound)
+			}
+			return err
+		}
+
+		afterData := map[string]any{
+			"first_name":           person.FirstName,
+			"last_name":            person.LastName,
+			"cedula":               person.Cedula,
+			"sex":                  person.Sex,
+			"age_approx":           person.AgeApprox,
+			"status":               person.Status,
+			"center_id":            person.CenterID,
+			"rescue_estado_id":     person.RescueEstadoID,
+			"rescue_municipio_id":  person.RescueMunicipioID,
+			"rescue_parroquia_id":  person.RescueParroquiaID,
+			"contacts":             person.Contacts,
+			"notes":                person.Notes,
+		}
+
+		event := &audit.Event{
+			UserID:       &actorID,
+			Action:       audit.ActionUpdate,
+			ResourceType: "person",
+			ResourceID:   &person.ID,
+			BeforeData:   beforeData,
+			AfterData:    afterData,
+		}
+
+		if err := s.auditStore.Insert(txCtx, event, beforeData, afterData); err != nil {
+			return err
+		}
+
+		updatedPerson = person
+		return nil
+	})
+
 	if err != nil {
 		span.RecordError(err)
-		span.SetStatus(codes.Error, "get person failure")
-		return nil, fmt.Errorf("update person: %w", err)
-	}
-	if row == nil {
-		return nil, fmt.Errorf("update person: %w", contracts.ErrNotFound)
-	}
-
-	person := &row.Person
-	if input.FirstName != nil {
-		person.FirstName = input.FirstName
-	}
-	if input.LastName != nil {
-		person.LastName = input.LastName
-	}
-	if input.Cedula != nil {
-		person.Cedula = input.Cedula
-	}
-	if input.Sex != nil {
-		person.Sex = input.Sex
-	}
-	if input.AgeApprox != nil {
-		person.AgeApprox = input.AgeApprox
-	}
-	if input.Status != nil {
-		person.Status = *input.Status
-	}
-	if input.RescueEstadoID != nil {
-		person.RescueEstadoID = *input.RescueEstadoID
-	}
-	if input.RescueMunicipioID != nil {
-		person.RescueMunicipioID = *input.RescueMunicipioID
-	}
-	if input.RescueParroquiaID != nil {
-		person.RescueParroquiaID = input.RescueParroquiaID
-	}
-	if input.CenterID != nil {
-		person.CenterID = *input.CenterID
-	}
-	if input.Contacts != nil {
-		person.Contacts = input.Contacts
-	}
-	if input.Notes != nil {
-		person.Notes = *input.Notes
-	}
-
-	if err := s.store.Update(ctx, person); err != nil {
-		span.RecordError(err)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("update person: %w", contracts.ErrNotFound)
-		}
 		span.SetStatus(codes.Error, "update person failure")
-		return nil, fmt.Errorf("update person: %w", err)
+		return nil, err
 	}
 
 	if s.searchEngine != nil {
-		doc := PersonToSearchDoc(person)
+		doc := PersonToSearchDoc(updatedPerson)
 		if err := s.searchEngine.Index(ctx, "persons", doc); err != nil {
 			slog.WarnContext(ctx, "failed to index person after update", "id", id, "err", err)
 		}
@@ -324,25 +447,115 @@ func (s *personsService) Update(ctx context.Context, id uuid.UUID, input UpdateP
 	return s.GetByID(ctx, id)
 }
 
-func (s *personsService) SoftDelete(ctx context.Context, id uuid.UUID) error {
+func (s *personsService) SoftDelete(ctx context.Context, id uuid.UUID, actorID uuid.UUID, expectedCenterID *uuid.UUID) error {
 	tracer := otel.Tracer(serviceTracerName)
 	ctx, span := tracer.Start(ctx, "SoftDeletePerson")
 	defer span.End()
 	span.SetAttributes(attribute.String("person.id", id.String()))
 
-	if err := s.store.SoftDelete(ctx, id); err != nil {
-		span.RecordError(err)
-		if err == sql.ErrNoRows {
-			span.SetStatus(codes.Error, "soft delete person not found")
+	err := s.transactor.WithinTransaction(ctx, func(txCtx context.Context) error {
+		row, err := s.store.GetByID(txCtx, id)
+		if err != nil {
+			return fmt.Errorf("soft delete person: %w", err)
+		}
+		if row == nil {
 			return fmt.Errorf("soft delete person: %w", contracts.ErrNotFound)
 		}
+
+		if expectedCenterID != nil && row.CenterID != *expectedCenterID {
+			return fmt.Errorf("soft delete person: %w", contracts.ErrNotFound)
+		}
+
+		beforeData := map[string]any{
+			"first_name":           row.FirstName,
+			"last_name":            row.LastName,
+			"cedula":               row.Cedula,
+			"sex":                  row.Sex,
+			"age_approx":           row.AgeApprox,
+			"status":               row.Status,
+			"center_id":            row.CenterID,
+			"rescue_estado_id":     row.RescueEstadoID,
+			"rescue_municipio_id":  row.RescueMunicipioID,
+			"rescue_parroquia_id":  row.RescueParroquiaID,
+		}
+
+		event := &audit.Event{
+			UserID:       &actorID,
+			Action:       audit.ActionDelete,
+			ResourceType: "person",
+			ResourceID:   &row.ID,
+			BeforeData:   beforeData,
+		}
+
+		if err := s.auditStore.Insert(txCtx, event, beforeData, nil); err != nil {
+			return err
+		}
+
+		if err := s.store.SoftDelete(txCtx, id); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("soft delete person: %w", contracts.ErrNotFound)
+			}
+			return err
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		span.RecordError(err)
 		span.SetStatus(codes.Error, "soft delete person failure")
-		return fmt.Errorf("soft delete person: %w", err)
+		return err
 	}
 
 	if s.searchEngine != nil {
 		if err := s.searchEngine.Delete(ctx, "persons", id.String()); err != nil {
 			slog.WarnContext(ctx, "failed to delete person from search index", "id", id, "err", err)
+		}
+	}
+
+	return nil
+}
+
+func (s *personsService) validateGeography(ctx context.Context, estadoID, municipioID uuid.UUID, parroquiaID *uuid.UUID) error {
+	ok, err := s.geoExists.EstadoExists(ctx, estadoID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("validate rescue estado: %w", ErrInvalidGeography)
+	}
+
+	ok, err = s.geoExists.MunicipioExists(ctx, municipioID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("validate rescue municipio: %w", ErrInvalidGeography)
+	}
+
+	ok, err = s.geoExists.MunicipioBelongsToEstado(ctx, municipioID, estadoID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("validate rescue municipio belongs to estado: %w", ErrInvalidGeography)
+	}
+
+	if parroquiaID != nil {
+		ok, err = s.geoExists.ParroquiaExists(ctx, *parroquiaID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("validate rescue parroquia: %w", ErrInvalidGeography)
+		}
+
+		ok, err = s.geoExists.ParroquiaBelongsToMunicipio(ctx, *parroquiaID, municipioID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("validate rescue parroquia belongs to municipio: %w", ErrInvalidGeography)
 		}
 	}
 

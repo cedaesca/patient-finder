@@ -21,6 +21,7 @@ var resourceTypeLabels = map[string]string{
 	"role":             "rol",
 	"user":             "usuario",
 	"center":           "centro",
+	"person":           "persona",
 	"whatsapp_template": "plantilla de WhatsApp",
 }
 

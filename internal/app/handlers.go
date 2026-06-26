@@ -27,7 +27,7 @@ func (a *Application) InitHandlers() {
 	auditHandler := audit.NewAuditHandler(a.Services.Audit)
 	geographyHandler := geography.NewGeographyHandler(a.Services.Geography)
 	centersHandler := centers.NewCentersHandler(a.Services.Centers, a.Services.Roles)
-	personsHandler := persons.NewPersonsHandler(a.Services.Persons)
+	personsHandler := persons.NewPersonsHandler(a.Services.Persons, a.Services.Roles)
 
 	a.Handlers = Handlers{
 		Auth:      authHandler,
