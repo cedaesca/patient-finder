@@ -4,6 +4,7 @@ import (
 	"github.com/cedaesca/patient-finder/internal/audit"
 	"github.com/cedaesca/patient-finder/internal/auth"
 	"github.com/cedaesca/patient-finder/internal/centers"
+	"github.com/cedaesca/patient-finder/internal/database"
 	"github.com/cedaesca/patient-finder/internal/geography"
 	"github.com/cedaesca/patient-finder/internal/otp"
 	"github.com/cedaesca/patient-finder/internal/persons"
@@ -31,10 +32,14 @@ func (a *Application) InitServices(searchEngine search.Engine) {
 		otpService,
 	)
 
+	transactor := database.NewPostgresTransactor(a.db)
+
 	usersService := users.NewUsersService(
 		a.Stores.Users(),
 		otpService,
 		a.Stores.Tokens(),
+		transactor,
+		a.Stores.Audit(),
 	)
 
 	auditService := audit.NewAuditService(a.Stores.Audit())

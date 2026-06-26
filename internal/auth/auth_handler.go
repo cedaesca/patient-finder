@@ -43,7 +43,6 @@ type completeUserRegistrationRequest struct {
 	Name              string `json:"name" validate:"required,min=3,max=50"`
 	LastName          string `json:"last_name" validate:"required,min=3,max=50"`
 	Password          string `json:"password" validate:"required,min=8,max=255"`
-	Locale            string `json:"locale" validate:"required,locale"`
 	VerificationToken string `json:"verification_token" validate:"required"`
 }
 
@@ -126,7 +125,6 @@ func (h *AuthHandler) HandleCompleteRegister(w http.ResponseWriter, r *http.Requ
 		Email:             req.Email,
 		Name:              req.Name,
 		LastName:          req.LastName,
-		Locale:            req.Locale,
 		Password:          req.Password,
 		VerificationToken: req.VerificationToken,
 	}

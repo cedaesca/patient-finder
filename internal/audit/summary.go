@@ -19,6 +19,7 @@ var resourceTypeLabels = map[string]string{
 	"bot_flow":     "flujo de bot",
 	"invitation":   "invitación",
 	"role":         "rol",
+	"user":         "usuario",
 	"whatsapp_template": "plantilla de WhatsApp",
 }
 

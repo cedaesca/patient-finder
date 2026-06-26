@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/cedaesca/patient-finder/internal/database"
+	"github.com/cedaesca/patient-finder/internal/pagination"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"golang.org/x/crypto/bcrypt"
@@ -46,7 +47,7 @@ func (p *password) Matches(plaintextPassword string) (bool, error) {
 		case errors.Is(err, bcrypt.ErrMismatchedHashAndPassword):
 			return false, nil
 		default:
-			return false, err //internal server error
+			return false, err
 		}
 	}
 
@@ -54,19 +55,15 @@ func (p *password) Matches(plaintextPassword string) (bool, error) {
 }
 
 type User struct {
-	ID               uuid.UUID  `json:"id"`
-	Name             string     `json:"name"`
-	LastName         string     `json:"last_name"`
-	Email            string     `json:"email"`
-	PasswordHash     password   `json:"-"`
-	Locale           string     `json:"locale"`
-	LastActiveTeamID uuid.UUID  `json:"last_active_team_id"`
-	CreatedAt        time.Time  `json:"created_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	LastActivityAt   time.Time  `json:"last_activity_at"`
-	OnboardedAt      *time.Time `json:"onboarded_at"`
-	DeletedAt        time.Time  `json:"deleted_at"`
-	BannedAt         time.Time  `json:"banned_at"`
+	ID             uuid.UUID  `json:"id"`
+	Name           string     `json:"name"`
+	LastName       string     `json:"last_name"`
+	Email          string     `json:"email"`
+	PasswordHash   password   `json:"-"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	LastActivityAt time.Time  `json:"last_activity_at"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
 }
 
 type UserStore interface {
@@ -75,14 +72,15 @@ type UserStore interface {
 	UpdateUser(ctx context.Context, user *User) error
 	UpdateUserPassword(ctx context.Context, id uuid.UUID, passwordHash []byte) error
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
-	MarkOnboarded(ctx context.Context, id uuid.UUID) error
+	ListUsers(ctx context.Context, f pagination.Filters) ([]User, int, error)
+	SoftDeleteUser(ctx context.Context, id uuid.UUID) error
 }
 
 type PostgresUserStore struct {
-	db *sql.DB
+	db database.DBTX
 }
 
-func NewPostgresUserStore(db *sql.DB) *PostgresUserStore {
+func NewPostgresUserStore(db database.DBTX) *PostgresUserStore {
 	return &PostgresUserStore{
 		db: db,
 	}
@@ -90,8 +88,8 @@ func NewPostgresUserStore(db *sql.DB) *PostgresUserStore {
 
 func (s *PostgresUserStore) CreateUser(ctx context.Context, user *User) error {
 	query := `
-		INSERT INTO users (name, last_name, email, password_hash, locale)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO users (name, last_name, email, password_hash)
+		VALUES ($1, $2, $3, $4)
 		RETURNING id, created_at, updated_at
   	`
 
@@ -100,7 +98,9 @@ func (s *PostgresUserStore) CreateUser(ctx context.Context, user *User) error {
 	defer span.End()
 	database.TagOtelTrace(span, userStoreTable, "INSERT", query)
 
-	err := s.db.QueryRowContext(ctx, query, user.Name, user.LastName, user.Email, user.PasswordHash.hash, user.Locale).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
+	exec := database.GetExecutor(ctx, s.db)
+
+	err := exec.QueryRowContext(ctx, query, user.Name, user.LastName, user.Email, user.PasswordHash.hash).Scan(&user.ID, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		statusMessage := "insert user failure"
 		returnedErr := err
@@ -135,7 +135,7 @@ func (s *PostgresUserStore) GetUserByEmail(ctx context.Context, email string) (*
 	}
 
 	query := `
-		SELECT id, name, last_name, email, password_hash, locale, last_active_team_id, created_at, updated_at, last_activity_at, onboarded_at
+		SELECT id, name, last_name, email, password_hash, created_at, updated_at, last_activity_at, deleted_at
 		FROM users
 		WHERE email = $1 AND deleted_at IS NULL
   	`
@@ -145,18 +145,18 @@ func (s *PostgresUserStore) GetUserByEmail(ctx context.Context, email string) (*
 	defer span.End()
 	database.TagOtelTrace(span, userStoreTable, "SELECT", query)
 
-	err := s.db.QueryRowContext(ctx, query, email).Scan(
+	exec := database.GetExecutor(ctx, s.db)
+
+	err := exec.QueryRowContext(ctx, query, email).Scan(
 		&user.ID,
 		&user.Name,
 		&user.LastName,
 		&user.Email,
 		&user.PasswordHash.hash,
-		&user.Locale,
-		&user.LastActiveTeamID,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 		&user.LastActivityAt,
-		&user.OnboardedAt,
+		&user.DeletedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -179,7 +179,7 @@ func (s *PostgresUserStore) GetUserByID(ctx context.Context, id uuid.UUID) (*Use
 	}
 
 	query := `
-		SELECT id, name, last_name, email, password_hash, locale, last_active_team_id, created_at, updated_at, last_activity_at, onboarded_at
+		SELECT id, name, last_name, email, password_hash, created_at, updated_at, last_activity_at, deleted_at
 		FROM users
 		WHERE id = $1 AND deleted_at IS NULL
   	`
@@ -189,18 +189,18 @@ func (s *PostgresUserStore) GetUserByID(ctx context.Context, id uuid.UUID) (*Use
 	defer span.End()
 	database.TagOtelTrace(span, userStoreTable, "SELECT", query)
 
-	err := s.db.QueryRowContext(ctx, query, id).Scan(
+	exec := database.GetExecutor(ctx, s.db)
+
+	err := exec.QueryRowContext(ctx, query, id).Scan(
 		&user.ID,
 		&user.Name,
 		&user.LastName,
 		&user.Email,
 		&user.PasswordHash.hash,
-		&user.Locale,
-		&user.LastActiveTeamID,
 		&user.CreatedAt,
 		&user.UpdatedAt,
 		&user.LastActivityAt,
-		&user.OnboardedAt,
+		&user.DeletedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -220,8 +220,8 @@ func (s *PostgresUserStore) GetUserByID(ctx context.Context, id uuid.UUID) (*Use
 func (s *PostgresUserStore) UpdateUser(ctx context.Context, user *User) error {
 	query := `
 		UPDATE users
-		SET name = $1, last_name = $2, email = $3, locale = $4, last_active_team_id = $5, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $6
+		SET name = $1, last_name = $2, email = $3, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $4
 		RETURNING updated_at
   	`
 
@@ -230,7 +230,9 @@ func (s *PostgresUserStore) UpdateUser(ctx context.Context, user *User) error {
 	defer span.End()
 	database.TagOtelTrace(span, userStoreTable, "UPDATE", query)
 
-	result, err := s.db.ExecContext(ctx, query, user.Name, user.LastName, user.Email, user.Locale, user.LastActiveTeamID, user.ID)
+	exec := database.GetExecutor(ctx, s.db)
+
+	result, err := exec.ExecContext(ctx, query, user.Name, user.LastName, user.Email, user.ID)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "update failure")
@@ -253,30 +255,6 @@ func (s *PostgresUserStore) UpdateUser(ctx context.Context, user *User) error {
 	return nil
 }
 
-// MarkOnboarded stamps onboarded_at = NOW() only if the row is still null, so
-// the second call is a no-op and the first-finish wins. Callers don't need to
-// distinguish "already onboarded" from "just onboarded" — both map to success.
-func (s *PostgresUserStore) MarkOnboarded(ctx context.Context, id uuid.UUID) error {
-	query := `
-		UPDATE users
-		SET onboarded_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1 AND onboarded_at IS NULL AND deleted_at IS NULL
-	`
-
-	tracer := otel.Tracer(userStoreTracerName)
-	ctx, span := tracer.Start(ctx, "MarkOnboarded")
-	defer span.End()
-	database.TagOtelTrace(span, userStoreTable, "UPDATE", query)
-
-	if _, err := s.db.ExecContext(ctx, query, id); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "mark onboarded failure")
-		return err
-	}
-
-	return nil
-}
-
 func (s *PostgresUserStore) UpdateUserPassword(ctx context.Context, id uuid.UUID, passwordHash []byte) error {
 	query := `
 		UPDATE users
@@ -289,7 +267,9 @@ func (s *PostgresUserStore) UpdateUserPassword(ctx context.Context, id uuid.UUID
 	defer span.End()
 	database.TagOtelTrace(span, userStoreTable, "UPDATE", query)
 
-	result, err := s.db.ExecContext(ctx, query, passwordHash, id)
+	exec := database.GetExecutor(ctx, s.db)
+
+	result, err := exec.ExecContext(ctx, query, passwordHash, id)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "update password failure")
@@ -302,6 +282,93 @@ func (s *PostgresUserStore) UpdateUserPassword(ctx context.Context, id uuid.UUID
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "fetch affected rows failure")
 
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
+func (s *PostgresUserStore) ListUsers(ctx context.Context, f pagination.Filters) ([]User, int, error) {
+	tracer := otel.Tracer(userStoreTracerName)
+	ctx, span := tracer.Start(ctx, "ListUsers")
+	defer span.End()
+	database.TagOtelTrace(span, userStoreTable, "SELECT", "users WHERE deleted_at IS NULL")
+
+	exec := database.GetExecutor(ctx, s.db)
+
+	var total int
+	err := exec.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE deleted_at IS NULL`).Scan(&total)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "count users failure")
+		return nil, 0, err
+	}
+
+	query := `
+		SELECT id, name, last_name, email, password_hash, created_at, updated_at, last_activity_at, deleted_at
+		FROM users
+		WHERE deleted_at IS NULL
+		ORDER BY created_at DESC
+		LIMIT $1 OFFSET $2
+	`
+
+	rows, err := exec.QueryContext(ctx, query, f.Limit(), f.Offset())
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query users failure")
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	result := make([]User, 0)
+	for rows.Next() {
+		var u User
+		if err := rows.Scan(
+			&u.ID, &u.Name, &u.LastName, &u.Email, &u.PasswordHash.hash,
+			&u.CreatedAt, &u.UpdatedAt, &u.LastActivityAt, &u.DeletedAt,
+		); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "scan user failure")
+			return nil, 0, err
+		}
+		result = append(result, u)
+	}
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "iterate users failure")
+		return nil, 0, err
+	}
+
+	return result, total, nil
+}
+
+func (s *PostgresUserStore) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	query := `
+		UPDATE users
+		SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND deleted_at IS NULL
+	`
+
+	tracer := otel.Tracer(userStoreTracerName)
+	ctx, span := tracer.Start(ctx, "SoftDeleteUser")
+	defer span.End()
+	database.TagOtelTrace(span, userStoreTable, "UPDATE", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+
+	result, err := exec.ExecContext(ctx, query, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "soft delete user failure")
+		return err
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
 		return err
 	}
 

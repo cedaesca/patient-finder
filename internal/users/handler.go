@@ -11,6 +11,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/google/uuid"
 	"github.com/cedaesca/patient-finder/internal/contracts"
+	"github.com/cedaesca/patient-finder/internal/pagination"
 	"github.com/cedaesca/patient-finder/internal/request"
 	"github.com/cedaesca/patient-finder/internal/utils"
 	"go.opentelemetry.io/otel/codes"
@@ -24,15 +25,27 @@ type Handler struct {
 }
 
 type UpdateLoggedInUserRequest struct {
-	Name             *string `json:"name" validate:"omitempty,min=3,max=50"`
-	LastName         *string `json:"last_name" validate:"omitempty,min=3,max=50"`
-	LastActiveTeamID *string `json:"last_active_team_id" validate:"omitempty,uuid"`
+	Name     *string `json:"name" validate:"omitempty,min=3,max=50"`
+	LastName *string `json:"last_name" validate:"omitempty,min=3,max=50"`
 }
 
 type UpdateLoggedInUserPasswordRequest struct {
 	CurrentPassword string `json:"current_password" validate:"required,min=8,max=255"`
 	NewPassword     string `json:"new_password" validate:"required,min=8,max=255"`
 	Otp             string `json:"otp" validate:"required"`
+}
+
+type CreateUserRequest struct {
+	Email    string `json:"email" validate:"required,email"`
+	Name     string `json:"name" validate:"required,min=3,max=50"`
+	LastName string `json:"last_name" validate:"required,min=3,max=50"`
+	Password string `json:"password" validate:"required,min=8,max=255"`
+}
+
+type UpdateUserRequest struct {
+	Name     *string `json:"name" validate:"omitempty,min=3,max=50"`
+	LastName *string `json:"last_name" validate:"omitempty,min=3,max=50"`
+	Email    *string `json:"email" validate:"omitempty,email"`
 }
 
 func NewHandler(service UsersService) *Handler {
@@ -107,22 +120,9 @@ func (h *Handler) HandlePatchMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var lastActiveTeamID uuid.UUID
-	if req.LastActiveTeamID != nil && *req.LastActiveTeamID != "" {
-		var err error
-		lastActiveTeamID, err = uuid.Parse(*req.LastActiveTeamID)
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "validation failure")
-			utils.HandleValidationErrorHttpResponse(w, err)
-			return
-		}
-	}
-
 	input := UpdateUserInput{
-		Name:             req.Name,
-		LastName:         req.LastName,
-		LastActiveTeamID: lastActiveTeamID,
+		Name:     req.Name,
+		LastName: req.LastName,
 	}
 
 	updatedUser, err := h.service.UpdateUser(ctx, requestUserID, input)
@@ -149,30 +149,6 @@ func (h *Handler) HandlePatchMe(w http.ResponseWriter, r *http.Request) {
 	utils.HandleDataResponse(w, http.StatusOK, utils.ResponseData{
 		"user": updatedUser,
 	})
-}
-
-func (h *Handler) HandleMarkOnboarded(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	span := trace.SpanFromContext(ctx)
-	span.SetName("POST /users/me/onboard")
-
-	requestUserID := request.GetUserID(ctx)
-	if requestUserID == uuid.Nil {
-		span.SetStatus(codes.Error, "missing authenticated user in request context")
-		slog.ErrorContext(r.Context(), "HandleMarkOnboarded: missing authenticated user in request context")
-		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
-		return
-	}
-
-	if err := h.service.MarkOnboarded(ctx, requestUserID); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "mark onboarded failure")
-		slog.ErrorContext(r.Context(), "HandleMarkOnboarded", "err", err)
-		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *Handler) HandleCreatePasswordOtp(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +247,236 @@ func (h *Handler) HandleUpdatePassword(w http.ResponseWriter, r *http.Request) {
 	utils.WriteJSON(w, http.StatusOK, utils.Envelope{})
 }
 
+// --- Admin / CRUD handlers ---
+
+func (h *Handler) HandleCreateUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("POST /users")
+
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	var req CreateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid request payload")
+		slog.ErrorContext(r.Context(), "HandleCreateUser decode payload", "err", err)
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid request payload"})
+		return
+	}
+
+	if err := h.validate.Struct(req); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "validation failure")
+		utils.HandleValidationErrorHttpResponse(w, err)
+		return
+	}
+
+	input := CreateUserInput{
+		Email:    req.Email,
+		Name:     req.Name,
+		LastName: req.LastName,
+		Password: req.Password,
+	}
+
+	user, err := h.service.CreateUser(ctx, input, actorID)
+	if err != nil {
+		if errors.Is(err, ErrDuplicateEmail) {
+			span.SetStatus(codes.Error, "duplicate email")
+			utils.WriteJSON(w, http.StatusConflict, utils.Envelope{"message": "the email is already taken"})
+			return
+		}
+
+		if errors.Is(err, ErrDuplicateName) || errors.Is(err, ErrDuplicateLastName) {
+			span.SetStatus(codes.Error, "duplicate name data")
+			utils.WriteJSON(w, http.StatusConflict, utils.Envelope{"message": "the provided name data is already taken"})
+			return
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "create user failure")
+		slog.ErrorContext(r.Context(), "HandleCreateUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataResponse(w, http.StatusCreated, utils.ResponseData{
+		"user": user,
+	})
+}
+
+func (h *Handler) HandleListUsers(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("GET /users")
+
+	if _, err := request.RequiredUserID(ctx); err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	filters := pagination.Filters{
+		Page:     request.ReadIntQueryParam(r, "page", 1),
+		PageSize: request.ReadIntQueryParam(r, "page_size", 20),
+	}
+
+	users, meta, err := h.service.ListUsers(ctx, filters)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "list users failure")
+		slog.ErrorContext(r.Context(), "HandleListUsers", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataWithPaginationResponse(w, http.StatusOK,
+		utils.ResponseData{"users": users},
+		meta,
+	)
+}
+
+func (h *Handler) HandleGetUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("GET /users/{id}")
+
+	if _, err := request.RequiredUserID(ctx); err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	id, err := request.ReadIDParam(r, "id")
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid id param")
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid user id"})
+		return
+	}
+
+	user, err := h.service.GetUserByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, contracts.ErrNotFound) {
+			span.SetStatus(codes.Error, "user not found")
+			utils.WriteJSON(w, http.StatusNotFound, utils.Envelope{"message": "user not found"})
+			return
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get user failure")
+		slog.ErrorContext(r.Context(), "HandleGetUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataResponse(w, http.StatusOK, utils.ResponseData{
+		"user": user,
+	})
+}
+
+func (h *Handler) HandleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("PUT /users/{id}")
+
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	id, err := request.ReadIDParam(r, "id")
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid id param")
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid user id"})
+		return
+	}
+
+	var req UpdateUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "invalid request payload")
+		slog.ErrorContext(r.Context(), "HandleUpdateUser decode payload", "err", err)
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid request payload"})
+		return
+	}
+
+	if err := h.validate.Struct(req); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "validation failure")
+		utils.HandleValidationErrorHttpResponse(w, err)
+		return
+	}
+
+	input := AdminUpdateUserInput{
+		Name:     req.Name,
+		LastName: req.LastName,
+		Email:    req.Email,
+	}
+
+	user, err := h.service.AdminUpdateUser(ctx, id, input, actorID)
+	if err != nil {
+		if errors.Is(err, contracts.ErrNotFound) {
+			span.SetStatus(codes.Error, "user not found")
+			utils.WriteJSON(w, http.StatusNotFound, utils.Envelope{"message": "user not found"})
+			return
+		}
+
+		if errors.Is(err, ErrDuplicateEmail) {
+			span.SetStatus(codes.Error, "duplicate email")
+			utils.WriteJSON(w, http.StatusConflict, utils.Envelope{"message": "the email is already taken"})
+			return
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "update user failure")
+		slog.ErrorContext(r.Context(), "HandleUpdateUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataResponse(w, http.StatusOK, utils.ResponseData{
+		"user": user,
+	})
+}
+
+func (h *Handler) HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("DELETE /users/{id}")
+
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	id, err := request.ReadIDParam(r, "id")
+	if err != nil {
+		span.SetStatus(codes.Error, "invalid id param")
+		utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid user id"})
+		return
+	}
+
+	if err := h.service.DeleteUser(ctx, id, actorID); err != nil {
+		if errors.Is(err, contracts.ErrNotFound) {
+			span.SetStatus(codes.Error, "user not found")
+			utils.WriteJSON(w, http.StatusNotFound, utils.Envelope{"message": "user not found"})
+			return
+		}
+
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "delete user failure")
+		slog.ErrorContext(r.Context(), "HandleDeleteUser", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Route("/users", func(r chi.Router) {
 		var otpLimiters []func(http.Handler) http.Handler
@@ -294,10 +500,17 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 			)
 		}
 
+		// Self-service
 		r.Get("/me", h.HandleGetMe)
 		r.Patch("/me", h.HandlePatchMe)
-		r.Post("/me/onboard", h.HandleMarkOnboarded)
 		r.With(otpLimiters...).Post("/me/password/otp", h.HandleCreatePasswordOtp)
 		r.With(updatePwdLimiters...).Post("/me/password", h.HandleUpdatePassword)
+
+		// CRUD (permissions will be gated later)
+		r.Post("/", h.HandleCreateUser)
+		r.Get("/", h.HandleListUsers)
+		r.Get("/{id}", h.HandleGetUser)
+		r.Put("/{id}", h.HandleUpdateUser)
+		r.Delete("/{id}", h.HandleDeleteUser)
 	})
 }

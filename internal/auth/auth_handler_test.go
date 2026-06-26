@@ -152,7 +152,6 @@ func TestAuthHandler_HandleCompleteRegister(t *testing.T) {
 			"name":               "ab",
 			"last_name":          "cd",
 			"password":           "short",
-			"locale":             "",
 			"verification_token": "",
 		})
 
@@ -163,31 +162,6 @@ func TestAuthHandler_HandleCompleteRegister(t *testing.T) {
 		body := map[string]interface{}{}
 		testutil.DecodeJSONResponse(t, rr, &body)
 		require.Equal(t, "validation error", body["message"])
-	})
-
-	t.Run("invalid locale", func(t *testing.T) {
-		handler := newTestAuthHandler(t, &authServiceMock{})
-		rr := httptest.NewRecorder()
-		req := testutil.NewJSONRequest(t, http.MethodPost, "/auth/register/complete", map[string]string{
-			"email":              "user@example.com",
-			"name":               "User",
-			"last_name":          "Tester",
-			"password":           "longenough",
-			"locale":             "zzzzzzzzz",
-			"verification_token": "sometoken",
-		})
-
-		handler.HandleCompleteRegister(rr, req)
-
-		require.Equal(t, http.StatusBadRequest, rr.Code)
-
-		body := map[string]interface{}{}
-		testutil.DecodeJSONResponse(t, rr, &body)
-		require.Equal(t, "validation error", body["message"])
-
-		errorsField, ok := body["errors"].(map[string]interface{})
-		require.True(t, ok)
-		require.Equal(t, "locale must be a valid locale (BCP 47)", errorsField["locale"])
 	})
 
 	t.Run("invalid verification token", func(t *testing.T) {
@@ -202,7 +176,6 @@ func TestAuthHandler_HandleCompleteRegister(t *testing.T) {
 			"name":               "User",
 			"last_name":          "Tester",
 			"password":           "longenough",
-			"locale":             "es",
 			"verification_token": "sometoken",
 		})
 
@@ -227,7 +200,6 @@ func TestAuthHandler_HandleCompleteRegister(t *testing.T) {
 			"name":               "User",
 			"last_name":          "Tester",
 			"password":           "longenough",
-			"locale":             "es",
 			"verification_token": "sometoken",
 		})
 
@@ -252,7 +224,6 @@ func TestAuthHandler_HandleCompleteRegister(t *testing.T) {
 			"name":               "User",
 			"last_name":          "Tester",
 			"password":           "longenough",
-			"locale":             "es",
 			"verification_token": "sometoken",
 		})
 
@@ -278,7 +249,6 @@ func TestAuthHandler_HandleCompleteRegister(t *testing.T) {
 				require.Equal(t, "user@example.com", input.Email)
 				require.Equal(t, "User", input.Name)
 				require.Equal(t, "Tester", input.LastName)
-				require.Equal(t, "es", input.Locale)
 				return returnedUser, nil
 			},
 		})
@@ -288,7 +258,6 @@ func TestAuthHandler_HandleCompleteRegister(t *testing.T) {
 			"name":               "User",
 			"last_name":          "Tester",
 			"password":           "longenough",
-			"locale":             "es",
 			"verification_token": "sometoken",
 		})
 
