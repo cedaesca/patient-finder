@@ -21,8 +21,6 @@ type EmailOtpPurpose string
 type EmailOtpStatus string
 
 const (
-	EmailOtpPurposeRegister       EmailOtpPurpose = "register"
-	EmailOtpPurposePasswordReset  EmailOtpPurpose = "password_reset"
 	EmailOtpPurposePasswordChange EmailOtpPurpose = "password_change"
 )
 
