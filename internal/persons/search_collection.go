@@ -70,16 +70,39 @@ func NewPersonReindexer(store PersonsLister) search.CollectionReindexer {
 	}
 }
 
-func buildPersonSearchText(p PersonLite) string {
+func PersonToSearchDoc(person *Person) search.SearchDoc {
+	facets := map[string]any{
+		"sex":                 nil,
+		"rescue_estado_id":    person.RescueEstadoID.String(),
+		"rescue_municipio_id": person.RescueMunicipioID.String(),
+	}
+	if person.Sex != nil {
+		facets["sex"] = *person.Sex
+	}
+	if person.RescueParroquiaID != nil {
+		facets["rescue_parroquia_id"] = person.RescueParroquiaID.String()
+	}
+	return search.SearchDoc{
+		Code:       person.ID.String(),
+		SearchText: buildSearchText(person.FirstName, person.LastName, person.Cedula),
+		Facets:     facets,
+	}
+}
+
+func buildSearchText(firstName, lastName, cedula *string) string {
 	var parts []string
-	if p.FirstName != nil {
-		parts = append(parts, *p.FirstName)
+	if firstName != nil {
+		parts = append(parts, *firstName)
 	}
-	if p.LastName != nil {
-		parts = append(parts, *p.LastName)
+	if lastName != nil {
+		parts = append(parts, *lastName)
 	}
-	if p.Cedula != nil {
-		parts = append(parts, *p.Cedula)
+	if cedula != nil {
+		parts = append(parts, *cedula)
 	}
 	return strings.Join(parts, " ")
+}
+
+func buildPersonSearchText(p PersonLite) string {
+	return buildSearchText(p.FirstName, p.LastName, p.Cedula)
 }

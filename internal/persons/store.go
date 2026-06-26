@@ -50,6 +50,9 @@ type PersonsStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonRow, error)
 	GetByIDs(ctx context.Context, ids []uuid.UUID) ([]PersonRow, error)
 	ListAll(ctx context.Context) ([]PersonLite, error)
+	Create(ctx context.Context, person *Person) error
+	Update(ctx context.Context, person *Person) error
+	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
 
 type PostgresPersonsStore struct {
@@ -183,6 +186,89 @@ func (s *PostgresPersonsStore) ListAll(ctx context.Context) ([]PersonLite, error
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+func (s *PostgresPersonsStore) Create(ctx context.Context, person *Person) error {
+	const query = `
+		INSERT INTO persons (first_name, last_name, cedula, sex, age_approx, status, admitted_at,
+			rescue_estado_id, rescue_municipio_id, rescue_parroquia_id,
+			center_id, contacts, notes, created_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		RETURNING id, created_at, updated_at`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "CreatePerson")
+	defer span.End()
+	database.TagOtelTrace(span, "persons", "INSERT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	err := exec.QueryRowContext(ctx, query,
+		person.FirstName, person.LastName, person.Cedula, person.Sex, person.AgeApprox,
+		person.Status, person.AdmittedAt,
+		person.RescueEstadoID, person.RescueMunicipioID, person.RescueParroquiaID,
+		person.CenterID, person.Contacts, person.Notes, person.CreatedBy,
+	).Scan(&person.ID, &person.CreatedAt, &person.UpdatedAt)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "create person failure")
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresPersonsStore) Update(ctx context.Context, person *Person) error {
+	const query = `
+		UPDATE persons
+		SET first_name = $1, last_name = $2, cedula = $3, sex = $4, age_approx = $5,
+			status = $6, rescue_estado_id = $7, rescue_municipio_id = $8, rescue_parroquia_id = $9,
+			center_id = $10, contacts = $11, notes = $12, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $13 AND deleted_at IS NULL
+		RETURNING updated_at`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "UpdatePerson")
+	defer span.End()
+	database.TagOtelTrace(span, "persons", "UPDATE", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	err := exec.QueryRowContext(ctx, query,
+		person.FirstName, person.LastName, person.Cedula, person.Sex, person.AgeApprox,
+		person.Status, person.RescueEstadoID, person.RescueMunicipioID, person.RescueParroquiaID,
+		person.CenterID, person.Contacts, person.Notes, person.ID,
+	).Scan(&person.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "update person failure")
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresPersonsStore) SoftDelete(ctx context.Context, id uuid.UUID) error {
+	const query = `UPDATE persons SET deleted_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL`
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "SoftDeletePerson")
+	defer span.End()
+	database.TagOtelTrace(span, "persons", "UPDATE", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	result, err := exec.ExecContext(ctx, query, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "soft delete person failure")
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "rows affected failure")
+		return err
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
 }
 
 // pqArray formats []uuid.UUID for ANY($1) in PostgreSQL.

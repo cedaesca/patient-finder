@@ -76,7 +76,7 @@ func (e *Engine) CreateCollection(ctx context.Context, config search.CollectionC
 
 func (e *Engine) Index(ctx context.Context, collection string, doc search.SearchDoc) error {
 	tsDoc := typesenseDocFromSearchDoc(doc, collection)
-	action := api.Create
+	action := api.Upsert
 	params := &api.ImportDocumentsParams{Action: &action}
 	_, err := e.client.Collection(collection).Documents().Import(ctx, []interface{}{tsDoc}, params)
 	if err != nil {
