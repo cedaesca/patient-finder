@@ -58,6 +58,8 @@ type CreatePersonInput struct {
 	CenterID          uuid.UUID        `json:"center_id"`
 	Contacts          *json.RawMessage `json:"contacts"`
 	Notes             string           `json:"notes"`
+	Source            *string          `json:"source"`
+	SourceID          *string          `json:"source_id"`
 }
 
 type UpdatePersonInput struct {
@@ -78,7 +80,7 @@ type UpdatePersonInput struct {
 type PersonsService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error)
 	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error)
-	Create(ctx context.Context, input CreatePersonInput, createdBy uuid.UUID) (*PersonResponse, error)
+	Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error)
 	Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput) (*PersonResponse, error)
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
@@ -203,11 +205,13 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 	return results, total, nil
 }
 
-func (s *personsService) Create(ctx context.Context, input CreatePersonInput, createdBy uuid.UUID) (*PersonResponse, error) {
+func (s *personsService) Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error) {
 	tracer := otel.Tracer(serviceTracerName)
 	ctx, span := tracer.Start(ctx, "CreatePerson")
 	defer span.End()
-	span.SetAttributes(attribute.String("created_by", createdBy.String()))
+	if createdBy != nil {
+		span.SetAttributes(attribute.String("created_by", createdBy.String()))
+	}
 
 	person := &Person{
 		FirstName:         input.FirstName,
@@ -223,6 +227,8 @@ func (s *personsService) Create(ctx context.Context, input CreatePersonInput, cr
 		CenterID:          input.CenterID,
 		Notes:             input.Notes,
 		CreatedBy:         createdBy,
+		Source:            input.Source,
+		SourceID:          input.SourceID,
 	}
 	if person.AdmittedAt.IsZero() {
 		person.AdmittedAt = time.Now()
