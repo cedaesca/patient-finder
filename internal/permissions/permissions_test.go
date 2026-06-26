@@ -31,7 +31,10 @@ func TestAllPermissions_NonEmptyAndDomainColonFormat(t *testing.T) {
 func TestAllPermissions_IncludesEveryDomainGroup(t *testing.T) {
 	all := AllPermissions()
 	groups := map[string][]Code{
-		"audit": AuditPermissions(),
+		"audit":   AuditPermissions(),
+		"patients": PatientsPermissions(),
+		"centers":  CentersPermissions(),
+		"users":    UsersPermissions(),
 	}
 	for domain, group := range groups {
 		if len(group) == 0 {

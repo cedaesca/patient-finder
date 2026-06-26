@@ -132,7 +132,7 @@ func TestStart_RevokesThenCreates(t *testing.T) {
 	}
 
 	svc := NewService(store)
-	err := svc.Start(context.Background(), "user@example.com", EmailOtpPurposeRegister, "Subject", "Your code: %s")
+	err := svc.Start(context.Background(), "user@example.com", EmailOtpPurposePasswordChange, "Subject", "Your code: %s")
 	if err != nil {
 		t.Fatalf("Start error: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestStart_RevokeErrorShortCircuits(t *testing.T) {
 	}
 	svc := NewService(store)
 
-	err := svc.Start(context.Background(), "user@example.com", EmailOtpPurposeRegister, "S", "%s")
+	err := svc.Start(context.Background(), "user@example.com", EmailOtpPurposePasswordChange, "S", "%s")
 	if err == nil {
 		t.Fatal("expected error from Start")
 	}
@@ -189,7 +189,7 @@ func TestVerifyAndConsume_ValidOtpMarksUsed(t *testing.T) {
 		ID:        uuid.New(),
 		Email:     "u@e.com",
 		OtpHash:   hashString("ABC123"),
-		Purpose:   EmailOtpPurposeRegister,
+		Purpose:   EmailOtpPurposePasswordChange,
 		Status:    EmailOtpStatusPending,
 		ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
@@ -205,7 +205,7 @@ func TestVerifyAndConsume_ValidOtpMarksUsed(t *testing.T) {
 	}
 
 	svc := NewService(store)
-	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "ABC123", EmailOtpPurposeRegister)
+	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "ABC123", EmailOtpPurposePasswordChange)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestVerifyAndConsume_NotFoundReturnsInvalid(t *testing.T) {
 		},
 	}
 	svc := NewService(store)
-	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "x", EmailOtpPurposeRegister)
+	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "x", EmailOtpPurposePasswordChange)
 	if !errors.Is(err, ErrInvalidOtp) {
 		t.Fatalf("expected ErrInvalidOtp, got %v", err)
 	}
@@ -232,7 +232,7 @@ func TestVerifyAndConsume_ExpiredReturnsInvalid(t *testing.T) {
 		ID:        uuid.New(),
 		Email:     "u@e.com",
 		OtpHash:   hashString("ABC123"),
-		Purpose:   EmailOtpPurposeRegister,
+		Purpose:   EmailOtpPurposePasswordChange,
 		Status:    EmailOtpStatusPending,
 		ExpiresAt: time.Now().Add(-1 * time.Minute),
 	}
@@ -247,7 +247,7 @@ func TestVerifyAndConsume_ExpiredReturnsInvalid(t *testing.T) {
 		},
 	}
 	svc := NewService(store)
-	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "ABC123", EmailOtpPurposeRegister)
+	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "ABC123", EmailOtpPurposePasswordChange)
 	if !errors.Is(err, ErrInvalidOtp) {
 		t.Fatalf("expected ErrInvalidOtp, got %v", err)
 	}
@@ -263,7 +263,7 @@ func TestVerifyAndConsume_StoreErrorPropagates(t *testing.T) {
 		},
 	}
 	svc := NewService(store)
-	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "x", EmailOtpPurposeRegister)
+	err := svc.VerifyAndConsume(context.Background(), "u@e.com", "x", EmailOtpPurposePasswordChange)
 	if err == nil || errors.Is(err, ErrInvalidOtp) {
 		t.Fatalf("expected non-invalid error, got %v", err)
 	}

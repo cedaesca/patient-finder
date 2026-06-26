@@ -11,10 +11,22 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/cedaesca/patient-finder/internal/contracts"
+	"github.com/cedaesca/patient-finder/internal/pagination"
+	"github.com/cedaesca/patient-finder/internal/permissions"
 	"github.com/cedaesca/patient-finder/internal/request"
 	"github.com/cedaesca/patient-finder/internal/testutil"
 	"github.com/stretchr/testify/require"
 )
+
+type alwaysAllowGuard struct{}
+
+func (alwaysAllowGuard) HasPermission(_ context.Context, _ uuid.UUID, _ permissions.Code, _ *uuid.UUID) (bool, error) {
+	return true, nil
+}
+
+func (alwaysAllowGuard) HasRole(_ context.Context, _ uuid.UUID, _ string) (bool, error) {
+	return false, nil
+}
 
 type usersServiceMock struct {
 	getUserByIDFn                func(ctx context.Context, id uuid.UUID) (*User, error)
@@ -22,14 +34,12 @@ type usersServiceMock struct {
 	startLoggedInUserPasswordOtp func(ctx context.Context, id uuid.UUID) error
 	updateLoggedInUserPasswordFn func(ctx context.Context, id uuid.UUID, input UpdateLoggedInUserPasswordInput) error
 	getUserIDByEmailFn           func(ctx context.Context, email string) (uuid.UUID, error)
-	markOnboardedFn              func(ctx context.Context, id uuid.UUID) error
-}
-
-func (m *usersServiceMock) MarkOnboarded(ctx context.Context, id uuid.UUID) error {
-	if m.markOnboardedFn != nil {
-		return m.markOnboardedFn(ctx, id)
-	}
-	return nil
+	createUserFn                 func(ctx context.Context, input CreateUserInput, actorID uuid.UUID) (*User, error)
+	listUsersFn                  func(ctx context.Context, filters pagination.Filters) ([]User, pagination.Metadata, error)
+	adminUpdateUserFn            func(ctx context.Context, id uuid.UUID, input AdminUpdateUserInput, actorID uuid.UUID) (*User, error)
+	deleteUserFn                 func(ctx context.Context, id uuid.UUID, actorID uuid.UUID) error
+	getUserRolesFn               func(ctx context.Context, userID uuid.UUID) ([]UserRole, error)
+	replaceUserRolesFn           func(ctx context.Context, userID uuid.UUID, assignments []RoleAssignment) error
 }
 
 func (m *usersServiceMock) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
@@ -65,15 +75,57 @@ func (m *usersServiceMock) UpdateLoggedInUserPassword(ctx context.Context, id uu
 }
 
 func (m *usersServiceMock) GetUserIDByEmail(ctx context.Context, email string) (uuid.UUID, error) {
-	if m.updateLoggedInUserPasswordFn != nil {
+	if m.getUserIDByEmailFn != nil {
 		return m.getUserIDByEmailFn(ctx, email)
 	}
 
 	return uuid.Nil, nil
 }
 
+func (m *usersServiceMock) CreateUser(ctx context.Context, input CreateUserInput, actorID uuid.UUID) (*User, error) {
+	if m.createUserFn != nil {
+		return m.createUserFn(ctx, input, actorID)
+	}
+	return nil, nil
+}
+
+func (m *usersServiceMock) ListUsers(ctx context.Context, filters pagination.Filters) ([]User, pagination.Metadata, error) {
+	if m.listUsersFn != nil {
+		return m.listUsersFn(ctx, filters)
+	}
+	return nil, pagination.Metadata{}, nil
+}
+
+func (m *usersServiceMock) AdminUpdateUser(ctx context.Context, id uuid.UUID, input AdminUpdateUserInput, actorID uuid.UUID) (*User, error) {
+	if m.adminUpdateUserFn != nil {
+		return m.adminUpdateUserFn(ctx, id, input, actorID)
+	}
+	return nil, nil
+}
+
+func (m *usersServiceMock) DeleteUser(ctx context.Context, id uuid.UUID, actorID uuid.UUID) error {
+	if m.deleteUserFn != nil {
+		return m.deleteUserFn(ctx, id, actorID)
+	}
+	return nil
+}
+
+func (m *usersServiceMock) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error) {
+	if m.getUserRolesFn != nil {
+		return m.getUserRolesFn(ctx, userID)
+	}
+	return nil, nil
+}
+
+func (m *usersServiceMock) ReplaceUserRoles(ctx context.Context, userID uuid.UUID, assignments []RoleAssignment) error {
+	if m.replaceUserRolesFn != nil {
+		return m.replaceUserRolesFn(ctx, userID, assignments)
+	}
+	return nil
+}
+
 func newTestUsersHandler(service UsersService) *Handler {
-	return NewHandler(service)
+	return NewHandler(service, alwaysAllowGuard{})
 }
 
 func TestUsersHandler_HandleGetMe(t *testing.T) {
@@ -124,7 +176,6 @@ func TestUsersHandler_HandleGetMe(t *testing.T) {
 					Name:     "Lupi",
 					LastName: "Tester",
 					Email:    "lupi@example.com",
-					Locale:   "es",
 				}, nil
 			},
 		})
@@ -282,7 +333,6 @@ func TestUsersHandler_HandlePatchMe(t *testing.T) {
 					Name:     "Lupita",
 					LastName: "Original",
 					Email:    "lupi@example.com",
-					Locale:   "es",
 				}, nil
 			},
 		})

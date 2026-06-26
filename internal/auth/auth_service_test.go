@@ -4,41 +4,28 @@ import (
 	"context"
 	"errors"
 	"os"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"github.com/cedaesca/patient-finder/internal/otp"
+	"github.com/cedaesca/patient-finder/internal/pagination"
 	"github.com/cedaesca/patient-finder/internal/users"
 	"github.com/stretchr/testify/require"
-)
-
-type EmailOtpPurpose = otp.EmailOtpPurpose
-type EmailOtpStatus = otp.EmailOtpStatus
-
-const (
-	EmailOtpPurposeRegister       = otp.EmailOtpPurposeRegister
-	EmailOtpPurposePasswordReset  = otp.EmailOtpPurposePasswordReset
-	EmailOtpPurposePasswordChange = otp.EmailOtpPurposePasswordChange
 )
 
 func TestMain(m *testing.M) {
 	originalAccess := jwtAccessTokenSecret
 	originalRefresh := jwtRefreshTokenSecret
-	originalRegistration := jwtRegistrationTokenSecret
 
 	jwtAccessTokenSecret = []byte("test-access-secret")
 	jwtRefreshTokenSecret = []byte("test-refresh-secret")
-	jwtRegistrationTokenSecret = []byte("test-registration-secret")
 
 	code := m.Run()
 
 	jwtAccessTokenSecret = originalAccess
 	jwtRefreshTokenSecret = originalRefresh
-	jwtRegistrationTokenSecret = originalRegistration
 
 	os.Exit(code)
 }
@@ -108,259 +95,6 @@ func TestAuthService_Login(t *testing.T) {
 		require.NotEmpty(t, access)
 		require.NotEmpty(t, refresh)
 		require.True(t, insertCalled)
-	})
-}
-
-func TestAuthService_VerifyRegistrationOtp(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("returns token on valid otp", func(t *testing.T) {
-		svc := newAuthServiceForTest(t)
-		svc.otpService = &otpServiceMock{
-			verifyAndConsumeFn: func(ctx context.Context, email string, rawOtp string, purpose otp.EmailOtpPurpose) error {
-				require.Equal(t, "user@example.com", email)
-				require.Equal(t, "ABC123", rawOtp)
-				require.Equal(t, otp.EmailOtpPurposeRegister, purpose)
-				return nil
-			},
-		}
-
-		token, err := svc.VerifyRegistrationOtp(ctx, "user@example.com", "ABC123")
-		require.NoError(t, err)
-		require.NotEmpty(t, token)
-
-		tokenEmail, err := parseRegistrationToken(token)
-		require.NoError(t, err)
-		require.Equal(t, "user@example.com", tokenEmail)
-	})
-
-	t.Run("returns invalid otp", func(t *testing.T) {
-		svc := newAuthServiceForTest(t)
-		svc.otpService = &otpServiceMock{
-			verifyAndConsumeFn: func(ctx context.Context, email string, rawOtp string, purpose otp.EmailOtpPurpose) error {
-				return otp.ErrInvalidOtp
-			},
-		}
-
-		token, err := svc.VerifyRegistrationOtp(ctx, "user@example.com", "ABC123")
-		require.ErrorIs(t, err, ErrInvalidOtp)
-		require.Empty(t, token)
-	})
-
-	t.Run("propagates otp service error", func(t *testing.T) {
-		expected := errors.New("otp backend down")
-		svc := newAuthServiceForTest(t)
-		svc.otpService = &otpServiceMock{
-			verifyAndConsumeFn: func(ctx context.Context, email string, rawOtp string, purpose otp.EmailOtpPurpose) error {
-				return expected
-			},
-		}
-
-		_, err := svc.VerifyRegistrationOtp(ctx, "user@example.com", "ABC123")
-		require.ErrorIs(t, err, expected)
-	})
-}
-
-func TestParseRegistrationToken(t *testing.T) {
-	t.Run("rejects access token", func(t *testing.T) {
-		// A token signed with the access-token secret must not pass as a registration token.
-		claims := jwt.RegisteredClaims{
-			Subject:   "user@example.com",
-			Audience:  jwt.ClaimStrings{registrationTokenAudience},
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signed, err := token.SignedString(jwtAccessTokenSecret)
-		require.NoError(t, err)
-
-		_, err = parseRegistrationToken(signed)
-		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
-	})
-
-	t.Run("rejects expired token", func(t *testing.T) {
-		claims := jwt.RegisteredClaims{
-			Subject:   "user@example.com",
-			Audience:  jwt.ClaimStrings{registrationTokenAudience},
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(-1 * time.Minute)),
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signed, err := token.SignedString(jwtRegistrationTokenSecret)
-		require.NoError(t, err)
-
-		_, err = parseRegistrationToken(signed)
-		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
-	})
-
-	t.Run("rejects wrong audience", func(t *testing.T) {
-		claims := jwt.RegisteredClaims{
-			Subject:   "user@example.com",
-			Audience:  jwt.ClaimStrings{"some-other-audience"},
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signed, err := token.SignedString(jwtRegistrationTokenSecret)
-		require.NoError(t, err)
-
-		_, err = parseRegistrationToken(signed)
-		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
-	})
-
-	t.Run("rejects garbage", func(t *testing.T) {
-		_, err := parseRegistrationToken("not-a-jwt")
-		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
-	})
-
-	t.Run("accepts a fresh token", func(t *testing.T) {
-		signed, err := generateRegistrationToken("user@example.com")
-		require.NoError(t, err)
-
-		email, err := parseRegistrationToken(signed)
-		require.NoError(t, err)
-		require.Equal(t, "user@example.com", email)
-	})
-}
-
-func TestAuthService_CompleteRegistration(t *testing.T) {
-	ctx := context.Background()
-
-	freshToken := func(t *testing.T, email string) string {
-		t.Helper()
-		token, err := generateRegistrationToken(email)
-		require.NoError(t, err)
-		return token
-	}
-
-	t.Run("returns invalid registration token when token is garbage", func(t *testing.T) {
-		svc := newAuthServiceForTest(t)
-
-		_, err := svc.CompleteRegistration(ctx, CompleteRegistrationInput{
-			VerificationToken: "not-a-jwt",
-			Email:             "user@example.com",
-			Name:              "User",
-			LastName:          "Test",
-			Password:          "password",
-			Locale:            "es",
-		})
-		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
-	})
-
-	t.Run("returns invalid registration token when email does not match", func(t *testing.T) {
-		svc := newAuthServiceForTest(t)
-		token := freshToken(t, "other@example.com")
-
-		_, err := svc.CompleteRegistration(ctx, CompleteRegistrationInput{
-			VerificationToken: token,
-			Email:             "user@example.com",
-			Name:              "User",
-			LastName:          "Test",
-			Password:          "password",
-			Locale:            "es",
-		})
-		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
-	})
-
-	t.Run("propagates create user error", func(t *testing.T) {
-		expectedErr := errors.New("insert failed")
-		svc := newAuthServiceForTest(t)
-		svc.userStore = &userStoreMock{
-			createUserFn: func(ctx context.Context, user *users.User) error {
-				return expectedErr
-			},
-		}
-
-		_, err := svc.CompleteRegistration(ctx, CompleteRegistrationInput{
-			VerificationToken: freshToken(t, "user@example.com"),
-			Email:             "user@example.com",
-			Name:              "User",
-			LastName:          "Test",
-			Password:          "password",
-			Locale:            "es",
-		})
-		require.ErrorIs(t, err, expectedErr)
-	})
-
-	t.Run("success path returns user", func(t *testing.T) {
-		svc := newAuthServiceForTest(t)
-		svc.userStore = &userStoreMock{
-			createUserFn: func(ctx context.Context, user *users.User) error {
-				user.ID = uuid.New()
-				return nil
-			},
-		}
-
-		user, err := svc.CompleteRegistration(ctx, CompleteRegistrationInput{
-			VerificationToken: freshToken(t, "user@example.com"),
-			Email:             "user@example.com",
-			Name:              "User",
-			LastName:          "Test",
-			Password:          "password",
-			Locale:            "es",
-		})
-		require.NoError(t, err)
-		require.Equal(t, "user@example.com", user.Email)
-		require.Equal(t, "User", user.Name)
-		require.Equal(t, "Test", user.LastName)
-	})
-}
-
-func TestAuthService_StartRegistration(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("returns immediately when user exists", func(t *testing.T) {
-		svc := newAuthServiceForTest(t)
-		svc.userStore = &userStoreMock{
-			getUserByEmailFn: func(ctx context.Context, email string) (*users.User, error) {
-				return &users.User{}, nil
-			},
-		}
-
-		req, err := svc.StartRegistration(ctx, "user@example.com")
-		require.NoError(t, err)
-		require.Nil(t, req)
-	})
-
-	t.Run("fails when start otp flow fails", func(t *testing.T) {
-		expectedErr := errors.New("otp start fail")
-		svc := newAuthServiceForTest(t)
-		svc.userStore = &userStoreMock{
-			getUserByEmailFn: func(ctx context.Context, email string) (*users.User, error) {
-				return nil, nil
-			},
-		}
-		svc.otpService = &otpServiceMock{
-			startFn: func(ctx context.Context, email string, purpose otp.EmailOtpPurpose, subject string, textBodyFormat string) error {
-				return expectedErr
-			},
-		}
-
-		_, err := svc.StartRegistration(ctx, "user@example.com")
-		require.ErrorIs(t, err, expectedErr)
-	})
-
-	t.Run("starts otp and returns request", func(t *testing.T) {
-		svc := newAuthServiceForTest(t)
-		svc.userStore = &userStoreMock{
-			getUserByEmailFn: func(ctx context.Context, email string) (*users.User, error) {
-				return nil, nil
-			},
-		}
-		startCalled := false
-		svc.otpService = &otpServiceMock{
-			startFn: func(ctx context.Context, email string, purpose otp.EmailOtpPurpose, subject string, textBodyFormat string) error {
-				startCalled = true
-				require.Equal(t, "user@example.com", email)
-				require.Equal(t, otp.EmailOtpPurposeRegister, purpose)
-				require.Equal(t, "Patient Finder - One Time Pass code", subject)
-				require.Contains(t, textBodyFormat, "%s")
-				return nil
-			},
-		}
-
-		req, err := svc.StartRegistration(ctx, "user@example.com")
-		require.NoError(t, err)
-		require.NotNil(t, req)
-		require.Equal(t, "user@example.com", req.Email)
-		require.True(t, startCalled)
 	})
 }
 
@@ -524,30 +258,12 @@ func hashStringHelper(value string) string {
 	return svc.hashString(value)
 }
 
-func extractOTP(v string) string {
-	re := regexp.MustCompile(`([A-Z0-9]{6})\s*$`)
-	matches := re.FindStringSubmatch(strings.ToUpper(v))
-	if len(matches) < 2 {
-		return ""
-	}
-
-	return matches[1]
-}
-
 type userStoreMock struct {
 	createUserFn     func(context.Context, *users.User) error
 	getUserByEmailFn func(context.Context, string) (*users.User, error)
 	updateUserFn     func(context.Context, *users.User) error
 	getUserByIDFn    func(context.Context, uuid.UUID) (*users.User, error)
 	updatePasswordFn func(context.Context, uuid.UUID, []byte) error
-	markOnboardedFn  func(context.Context, uuid.UUID) error
-}
-
-func (m *userStoreMock) MarkOnboarded(ctx context.Context, id uuid.UUID) error {
-	if m.markOnboardedFn == nil {
-		panic("MarkOnboarded called unexpectedly")
-	}
-	return m.markOnboardedFn(ctx, id)
 }
 
 func (m *userStoreMock) CreateUser(ctx context.Context, user *users.User) error {
@@ -584,6 +300,30 @@ func (m *userStoreMock) UpdateUserPassword(ctx context.Context, id uuid.UUID, pa
 	}
 
 	return m.updatePasswordFn(ctx, id, passwordHash)
+}
+
+func (m *userStoreMock) ListUsers(ctx context.Context, filters pagination.Filters) ([]users.User, int, error) {
+	panic("ListUsers called unexpectedly")
+}
+
+func (m *userStoreMock) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	panic("SoftDeleteUser called unexpectedly")
+}
+
+func (m *userStoreMock) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]users.UserRole, error) {
+	panic("GetUserRoles called unexpectedly")
+}
+
+func (m *userStoreMock) RemoveAllUserRoles(ctx context.Context, userID uuid.UUID) error {
+	panic("RemoveAllUserRoles called unexpectedly")
+}
+
+func (m *userStoreMock) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, centerID *uuid.UUID) error {
+	panic("AssignUserRole called unexpectedly")
+}
+
+func (m *userStoreMock) GetRoleInfo(ctx context.Context, name string) (*users.RoleInfo, error) {
+	panic("GetRoleInfo called unexpectedly")
 }
 
 type refreshTokenStoreMock struct {

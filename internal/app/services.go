@@ -4,9 +4,11 @@ import (
 	"github.com/cedaesca/patient-finder/internal/audit"
 	"github.com/cedaesca/patient-finder/internal/auth"
 	"github.com/cedaesca/patient-finder/internal/centers"
+	"github.com/cedaesca/patient-finder/internal/database"
 	"github.com/cedaesca/patient-finder/internal/geography"
 	"github.com/cedaesca/patient-finder/internal/otp"
 	"github.com/cedaesca/patient-finder/internal/persons"
+	"github.com/cedaesca/patient-finder/internal/roles"
 	"github.com/cedaesca/patient-finder/internal/search"
 	"github.com/cedaesca/patient-finder/internal/users"
 )
@@ -18,6 +20,7 @@ type Services struct {
 	Geography geography.GeographyService
 	Centers   centers.CentersService
 	Persons   persons.PersonsService
+	Roles     roles.RolesService
 }
 
 func (a *Application) InitServices(searchEngine search.Engine) {
@@ -29,16 +32,21 @@ func (a *Application) InitServices(searchEngine search.Engine) {
 		otpService,
 	)
 
+	transactor := database.NewPostgresTransactor(a.db)
+	rolesService := roles.NewRolesService(a.Stores.Roles())
+
 	usersService := users.NewUsersService(
 		a.Stores.Users(),
 		otpService,
 		a.Stores.Tokens(),
+		transactor,
+		a.Stores.Audit(),
 	)
 
 	auditService := audit.NewAuditService(a.Stores.Audit())
 	geographyService := geography.NewGeographyService(a.Stores.Geography())
-	centersService := centers.NewCentersService(a.Stores.Centers())
-	personsService := persons.NewPersonsService(a.Stores.Persons(), searchEngine)
+	centersService := centers.NewCentersService(a.Stores.Centers(), transactor, a.Stores.Audit(), geographyService)
+	personsService := persons.NewPersonsService(a.Stores.Persons(), searchEngine, transactor, a.Stores.Audit(), geographyService)
 
 	a.Services = Services{
 		Auth:      authService,
@@ -47,5 +55,6 @@ func (a *Application) InitServices(searchEngine search.Engine) {
 		Geography: geographyService,
 		Centers:   centersService,
 		Persons:   personsService,
+		Roles:     rolesService,
 	}
 }

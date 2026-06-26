@@ -27,7 +27,6 @@ const (
 
 type Event struct {
 	ID           uuid.UUID   `json:"id"`
-	TeamID       uuid.UUID   `json:"team_id"`
 	UserID       *uuid.UUID  `json:"user_id,omitempty"`
 	Actor        *Actor      `json:"actor"`
 	Action       string      `json:"action"`
@@ -49,7 +48,6 @@ type Actor struct {
 }
 
 type Entry struct {
-	TeamID       uuid.UUID
 	UserID       *uuid.UUID
 	Action       string
 	ResourceType string
@@ -93,8 +91,8 @@ func (s *PostgresAuditStore) Insert(ctx context.Context, event *Event, beforeDat
 	exec := database.GetExecutor(ctx, s.db)
 
 	query := fmt.Sprintf(`
-		INSERT INTO %s (team_id, user_id, action, resource_type, resource_id, before_data, after_data, ip_address, user_agent)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9)
+		INSERT INTO %s (user_id, action, resource_type, resource_id, before_data, after_data, ip_address, user_agent)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8)
 	`, auditEventsTable)
 
 	tracer := otel.Tracer(auditStoreTracerName)
@@ -105,7 +103,6 @@ func (s *PostgresAuditStore) Insert(ctx context.Context, event *Event, beforeDat
 	afterJSON := marshalOrNil(afterData)
 
 	_, err := exec.ExecContext(ctx, query,
-		event.TeamID,
 		event.UserID,
 		event.Action,
 		event.ResourceType,
@@ -202,7 +199,7 @@ func (s *PostgresAuditStore) GetAll(ctx context.Context, filters QueryFilters, p
 
 	query := fmt.Sprintf(`
 		SELECT
-			e.id, e.team_id, e.user_id, e.action, e.resource_type, e.resource_id,
+			e.id, e.user_id, e.action, e.resource_type, e.resource_id,
 			e.before_data, e.after_data, e.ip_address, e.user_agent, e.created_at,
 			u.id, u.name, u.last_name, u.email
 		FROM %s e
@@ -232,7 +229,6 @@ func (s *PostgresAuditStore) GetAll(ctx context.Context, filters QueryFilters, p
 		)
 		err := rows.Scan(
 			&e.ID,
-			&e.TeamID,
 			&e.UserID,
 			&e.Action,
 			&e.ResourceType,

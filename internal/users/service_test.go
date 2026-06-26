@@ -6,8 +6,10 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/cedaesca/patient-finder/internal/audit"
 	"github.com/cedaesca/patient-finder/internal/contracts"
 	"github.com/cedaesca/patient-finder/internal/otp"
+	"github.com/cedaesca/patient-finder/internal/pagination"
 	"github.com/stretchr/testify/require"
 )
 
@@ -15,15 +17,16 @@ type userStoreMock struct {
 	getUserByIDFn    func(ctx context.Context, id uuid.UUID) (*User, error)
 	updateUserFn     func(ctx context.Context, user *User) error
 	updatePasswordFn func(ctx context.Context, id uuid.UUID, passwordHash []byte) error
-	markOnboardedFn  func(ctx context.Context, id uuid.UUID) error
 }
 
-func (m *userStoreMock) MarkOnboarded(ctx context.Context, id uuid.UUID) error {
-	if m.markOnboardedFn != nil {
-		return m.markOnboardedFn(ctx, id)
-	}
-	return nil
+func (m *userStoreMock) CreateUser(ctx context.Context, user *User) error { return nil }
+func (m *userStoreMock) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+	return nil, nil
 }
+func (m *userStoreMock) ListUsers(ctx context.Context, f pagination.Filters) ([]User, int, error) {
+	return nil, 0, nil
+}
+func (m *userStoreMock) SoftDeleteUser(ctx context.Context, id uuid.UUID) error { return nil }
 
 type otpServiceMock struct {
 	startFn            func(ctx context.Context, email string, purpose otp.EmailOtpPurpose, subject string, textBodyFormat string) error
@@ -34,7 +37,6 @@ func (m *otpServiceMock) Start(ctx context.Context, email string, purpose otp.Em
 	if m.startFn != nil {
 		return m.startFn(ctx, email, purpose, subject, textBodyFormat)
 	}
-
 	return nil
 }
 
@@ -42,7 +44,6 @@ func (m *otpServiceMock) VerifyAndConsume(ctx context.Context, email string, raw
 	if m.verifyAndConsumeFn != nil {
 		return m.verifyAndConsumeFn(ctx, email, rawOtp, purpose)
 	}
-
 	return nil
 }
 
@@ -54,8 +55,37 @@ func (m *refreshTokenRevokerMock) RevokeAllByUserID(ctx context.Context, userID 
 	if m.revokeAllByUserIDFn != nil {
 		return m.revokeAllByUserIDFn(ctx, userID)
 	}
-
 	return nil
+}
+
+type transactorMock struct {
+	withinTxFn func(ctx context.Context, fn func(txCtx context.Context) error) error
+}
+
+func (m *transactorMock) WithinTransaction(ctx context.Context, fn func(txCtx context.Context) error) error {
+	if m.withinTxFn != nil {
+		return m.withinTxFn(ctx, fn)
+	}
+	return fn(ctx)
+}
+
+type auditStoreMock struct {
+	insertFn func(ctx context.Context, event *audit.Event, beforeData, afterData any) error
+}
+
+func (m *auditStoreMock) Insert(ctx context.Context, event *audit.Event, beforeData, afterData any) error {
+	if m.insertFn != nil {
+		return m.insertFn(ctx, event, beforeData, afterData)
+	}
+	return nil
+}
+
+func (m *auditStoreMock) GetAll(ctx context.Context, filters audit.QueryFilters, pgFilters pagination.Filters) ([]*audit.Event, pagination.Metadata, error) {
+	return nil, pagination.Metadata{}, nil
+}
+
+func (m *auditStoreMock) GetResourceTypes(ctx context.Context, filters audit.QueryFilters) ([]audit.ResourceTypeCount, error) {
+	return nil, nil
 }
 
 func newTestUsersService(us UserStore, otpSvc otp.Service, rt RefreshTokenRevoker) UsersService {
@@ -69,22 +99,13 @@ func newTestUsersService(us UserStore, otpSvc otp.Service, rt RefreshTokenRevoke
 		rt = &refreshTokenRevokerMock{}
 	}
 
-	return NewUsersService(us, otpSvc, rt)
-}
-
-func (m *userStoreMock) CreateUser(ctx context.Context, user *User) error {
-	return nil
-}
-
-func (m *userStoreMock) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	return nil, nil
+	return NewUsersService(us, otpSvc, rt, &transactorMock{}, &auditStoreMock{})
 }
 
 func (m *userStoreMock) UpdateUser(ctx context.Context, user *User) error {
 	if m.updateUserFn != nil {
 		return m.updateUserFn(ctx, user)
 	}
-
 	return nil
 }
 
@@ -92,15 +113,18 @@ func (m *userStoreMock) UpdateUserPassword(ctx context.Context, id uuid.UUID, pa
 	if m.updatePasswordFn != nil {
 		return m.updatePasswordFn(ctx, id, passwordHash)
 	}
-
 	return nil
 }
+
+func (m *userStoreMock) GetUserRoles(ctx context.Context, userID uuid.UUID) ([]UserRole, error) { return nil, nil }
+func (m *userStoreMock) RemoveAllUserRoles(ctx context.Context, userID uuid.UUID) error { return nil }
+func (m *userStoreMock) AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, centerID *uuid.UUID) error { return nil }
+func (m *userStoreMock) GetRoleInfo(ctx context.Context, name string) (*RoleInfo, error) { return nil, nil }
 
 func (m *userStoreMock) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	if m.getUserByIDFn != nil {
 		return m.getUserByIDFn(ctx, id)
 	}
-
 	return nil, nil
 }
 
@@ -118,7 +142,7 @@ func TestUsersService_GetUserByID(t *testing.T) {
 
 		require.NoError(t, err)
 		require.NotNil(t, user)
-		require.Equal(t, userID, userID)
+		require.Equal(t, userID, user.ID)
 		require.Equal(t, "user@example.com", user.Email)
 	})
 
@@ -176,7 +200,6 @@ func TestUsersService_UpdateLoggedInUser(t *testing.T) {
 					Name:     "Old",
 					LastName: "Name",
 					Email:    "user@example.com",
-					Locale:   "es",
 				}, nil
 			},
 			updateUserFn: func(ctx context.Context, user *User) error {
@@ -208,7 +231,6 @@ func TestUsersService_UpdateLoggedInUser(t *testing.T) {
 					Name:     "Old",
 					LastName: "Last",
 					Email:    "user@example.com",
-					Locale:   "es",
 				}, nil
 			},
 			updateUserFn: func(ctx context.Context, user *User) error {

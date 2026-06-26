@@ -7,6 +7,7 @@ import (
 	"github.com/cedaesca/patient-finder/internal/geography"
 	"github.com/cedaesca/patient-finder/internal/otp"
 	"github.com/cedaesca/patient-finder/internal/persons"
+	"github.com/cedaesca/patient-finder/internal/roles"
 	"github.com/cedaesca/patient-finder/internal/users"
 )
 
@@ -18,6 +19,7 @@ type StoreProvider interface {
 	Geography() geography.GeographyStore
 	Centers() centers.CentersStore
 	Persons() persons.PersonsStore
+	Roles() roles.RolesStore
 }
 
 type Stores struct {
@@ -28,6 +30,7 @@ type Stores struct {
 	geography   geography.GeographyStore
 	centers     centers.CentersStore
 	persons     persons.PersonsStore
+	roles       roles.RolesStore
 }
 
 func (s *Stores) Users() users.UserStore                     { return s.users }
@@ -37,6 +40,7 @@ func (s *Stores) Audit() audit.AuditStore                    { return s.audit }
 func (s *Stores) Geography() geography.GeographyStore        { return s.geography }
 func (s *Stores) Centers() centers.CentersStore              { return s.centers }
 func (s *Stores) Persons() persons.PersonsStore              { return s.persons }
+func (s *Stores) Roles() roles.RolesStore                    { return s.roles }
 
 func (a *Application) InitStores() {
 	a.Stores = &Stores{
@@ -47,5 +51,6 @@ func (a *Application) InitStores() {
 		geography:   geography.NewPostgresGeographyStore(a.db),
 		centers:     centers.NewPostgresCentersStore(a.db),
 		persons:     persons.NewPostgresPersonsStore(a.db),
+		roles:       roles.NewPostgresRolesStore(a.db),
 	}
 }

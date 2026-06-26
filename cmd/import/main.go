@@ -13,8 +13,6 @@ import (
 
 	"github.com/cedaesca/patient-finder/internal/database"
 	"github.com/cedaesca/patient-finder/internal/persons"
-	"github.com/cedaesca/patient-finder/internal/search"
-	typesense "github.com/cedaesca/patient-finder/internal/search/typesense"
 	"github.com/google/uuid"
 	"github.com/xuri/excelize/v2"
 )
@@ -43,10 +41,7 @@ func main() {
 
 	ctx := context.Background()
 
-	engine := initSearchEngine(ctx)
-
 	store := persons.NewPostgresPersonsStore(db)
-	svc := persons.NewPersonsService(store, engine)
 
 	centerMap := loadCenters(db)
 	if len(centerMap) == 0 {
@@ -158,7 +153,7 @@ func main() {
 			continue
 		}
 
-		input := persons.CreatePersonInput{
+		person := &persons.Person{
 			FirstName:         firstName,
 			LastName:          lastName,
 			Cedula:            cedula,
@@ -172,11 +167,12 @@ func main() {
 			CenterID:          centerID,
 			Contacts:          contacts,
 			Notes:             notes,
+			CreatedBy:         nil,
 			Source:            &source,
 			SourceID:          &sourceID,
 		}
 
-		if _, err := svc.Create(ctx, input, nil); err != nil {
+		if err := store.Create(ctx, person); err != nil {
 			slog.Error("create person", "name", fullName, "cedula", cedula, "err", err)
 			skipped++
 			continue
@@ -185,19 +181,6 @@ func main() {
 	}
 
 	slog.Info("import complete", "imported", imported, "skipped", skipped)
-}
-
-func initSearchEngine(ctx context.Context) search.Engine {
-	engine, err := typesense.NewEngineFromEnv()
-	if err != nil {
-		slog.Warn("typesense not configured, search indexing will be skipped during import")
-		return nil
-	}
-	cfg := persons.PersonCollection
-	if err := engine.CreateCollection(ctx, cfg); err != nil {
-		slog.Warn("create typesense collection", "err", err)
-	}
-	return engine
 }
 
 func loadCenters(db *sql.DB) map[string]uuid.UUID {

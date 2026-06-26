@@ -34,7 +34,6 @@ func (l *AuditLogger) Log(ctx context.Context, entry Entry) {
 		defer cancel()
 
 		event := &Event{
-			TeamID:       entry.TeamID,
 			UserID:       entry.UserID,
 			Action:       entry.Action,
 			ResourceType: entry.ResourceType,

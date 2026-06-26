@@ -32,6 +32,9 @@ type Center struct {
 type CentersStore interface {
 	ListActive(ctx context.Context, filters pagination.Filters) ([]Center, pagination.Metadata, error)
 	GetByID(ctx context.Context, id uuid.UUID) (*Center, error)
+	Create(ctx context.Context, center *Center) error
+	Update(ctx context.Context, center *Center) error
+	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
 
 type PostgresCentersStore struct {
@@ -117,4 +120,68 @@ func (s *PostgresCentersStore) GetByID(ctx context.Context, id uuid.UUID) (*Cent
 	}
 
 	return &c, nil
+}
+
+func (s *PostgresCentersStore) Create(ctx context.Context, c *Center) error {
+	const query = `INSERT INTO centers (name, type, estado_id, municipio_id, parroquia_id, address, contacts)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id, created_at, updated_at`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "CreateCenter")
+	defer span.End()
+	database.TagOtelTrace(span, "centers", "INSERT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	err := exec.QueryRowContext(ctx, query,
+		c.Name, c.Type, c.EstadoID, c.MunicipioID, c.ParroquiaID, c.Address, c.Contacts,
+	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "insert center failure")
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresCentersStore) Update(ctx context.Context, c *Center) error {
+	const query = `UPDATE centers
+		SET name = $1, type = $2, estado_id = $3, municipio_id = $4, parroquia_id = $5,
+		    address = $6, contacts = $7, updated_at = CURRENT_TIMESTAMP
+		WHERE id = $8
+		RETURNING updated_at`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "UpdateCenter")
+	defer span.End()
+	database.TagOtelTrace(span, "centers", "UPDATE", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	err := exec.QueryRowContext(ctx, query,
+		c.Name, c.Type, c.EstadoID, c.MunicipioID, c.ParroquiaID, c.Address, c.Contacts, c.ID,
+	).Scan(&c.UpdatedAt)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "update center failure")
+		return err
+	}
+	return nil
+}
+
+func (s *PostgresCentersStore) SoftDelete(ctx context.Context, id uuid.UUID) error {
+	const query = `UPDATE centers SET is_active = false, updated_at = CURRENT_TIMESTAMP WHERE id = $1`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "SoftDeleteCenter")
+	defer span.End()
+	database.TagOtelTrace(span, "centers", "UPDATE", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	_, err := exec.ExecContext(ctx, query, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "soft delete center failure")
+		return err
+	}
+	return nil
 }

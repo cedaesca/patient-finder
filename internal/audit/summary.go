@@ -10,15 +10,18 @@ import (
 // used by the audit summary. Missing entries fall through to the raw
 // resource_type verbatim — that's fine, the frontend keeps its own fallback.
 var resourceTypeLabels = map[string]string{
-	"deal":         "deal",
-	"contact":      "contacto",
-	"pipeline":     "pipeline",
-	"stage":        "etapa",
-	"team":         "equipo",
-	"team_member":  "miembro",
-	"bot_flow":     "flujo de bot",
-	"invitation":   "invitación",
-	"role":         "rol",
+	"deal":             "deal",
+	"contact":          "contacto",
+	"pipeline":         "pipeline",
+	"stage":            "etapa",
+	"team":             "equipo",
+	"team_member":      "miembro",
+	"bot_flow":         "flujo de bot",
+	"invitation":       "invitación",
+	"role":             "rol",
+	"user":             "usuario",
+	"center":           "centro",
+	"person":           "persona",
 	"whatsapp_template": "plantilla de WhatsApp",
 }
 
