@@ -2,8 +2,11 @@ package persons
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/cedaesca/patient-finder/internal/contracts"
@@ -41,9 +44,43 @@ type PersonResponse struct {
 	CreatedAt       time.Time        `json:"created_at"`
 }
 
+type CreatePersonInput struct {
+	FirstName         *string          `json:"first_name"`
+	LastName          *string          `json:"last_name"`
+	Cedula            *string          `json:"cedula"`
+	Sex               *string          `json:"sex"`
+	AgeApprox         *int             `json:"age_approx"`
+	Status            string           `json:"status"`
+	AdmittedAt        time.Time        `json:"admitted_at"`
+	RescueEstadoID    uuid.UUID        `json:"rescue_estado_id"`
+	RescueMunicipioID uuid.UUID        `json:"rescue_municipio_id"`
+	RescueParroquiaID *uuid.UUID       `json:"rescue_parroquia_id"`
+	CenterID          uuid.UUID        `json:"center_id"`
+	Contacts          *json.RawMessage `json:"contacts"`
+	Notes             string           `json:"notes"`
+}
+
+type UpdatePersonInput struct {
+	FirstName         *string          `json:"first_name"`
+	LastName          *string          `json:"last_name"`
+	Cedula            *string          `json:"cedula"`
+	Sex               *string          `json:"sex"`
+	AgeApprox         *int             `json:"age_approx"`
+	Status            *string          `json:"status"`
+	RescueEstadoID    *uuid.UUID       `json:"rescue_estado_id"`
+	RescueMunicipioID *uuid.UUID       `json:"rescue_municipio_id"`
+	RescueParroquiaID *uuid.UUID       `json:"rescue_parroquia_id"`
+	CenterID          *uuid.UUID       `json:"center_id"`
+	Contacts          *json.RawMessage `json:"contacts"`
+	Notes             *string          `json:"notes"`
+}
+
 type PersonsService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error)
 	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error)
+	Create(ctx context.Context, input CreatePersonInput, createdBy uuid.UUID) (*PersonResponse, error)
+	Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput) (*PersonResponse, error)
+	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
 
 type SearchFilters struct {
@@ -164,6 +201,149 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 	}
 
 	return results, total, nil
+}
+
+func (s *personsService) Create(ctx context.Context, input CreatePersonInput, createdBy uuid.UUID) (*PersonResponse, error) {
+	tracer := otel.Tracer(serviceTracerName)
+	ctx, span := tracer.Start(ctx, "CreatePerson")
+	defer span.End()
+	span.SetAttributes(attribute.String("created_by", createdBy.String()))
+
+	person := &Person{
+		FirstName:         input.FirstName,
+		LastName:          input.LastName,
+		Cedula:            input.Cedula,
+		Sex:               input.Sex,
+		AgeApprox:         input.AgeApprox,
+		Status:            input.Status,
+		AdmittedAt:        input.AdmittedAt,
+		RescueEstadoID:    input.RescueEstadoID,
+		RescueMunicipioID: input.RescueMunicipioID,
+		RescueParroquiaID: input.RescueParroquiaID,
+		CenterID:          input.CenterID,
+		Notes:             input.Notes,
+		CreatedBy:         createdBy,
+	}
+	if person.AdmittedAt.IsZero() {
+		person.AdmittedAt = time.Now()
+	}
+	if person.Status == "" {
+		person.Status = "hospitalized"
+	}
+
+	if err := s.store.Create(ctx, person); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "create person failure")
+		return nil, fmt.Errorf("create person: %w", err)
+	}
+
+	if s.searchEngine != nil {
+		doc := PersonToSearchDoc(person)
+		if err := s.searchEngine.Index(ctx, "persons", doc); err != nil {
+			slog.WarnContext(ctx, "failed to index person after create", "id", person.ID, "err", err)
+		}
+	}
+
+	return s.GetByID(ctx, person.ID)
+}
+
+func (s *personsService) Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput) (*PersonResponse, error) {
+	tracer := otel.Tracer(serviceTracerName)
+	ctx, span := tracer.Start(ctx, "UpdatePerson")
+	defer span.End()
+	span.SetAttributes(attribute.String("person.id", id.String()))
+
+	row, err := s.store.GetByID(ctx, id)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get person failure")
+		return nil, fmt.Errorf("update person: %w", err)
+	}
+	if row == nil {
+		return nil, fmt.Errorf("update person: %w", contracts.ErrNotFound)
+	}
+
+	person := &row.Person
+	if input.FirstName != nil {
+		person.FirstName = input.FirstName
+	}
+	if input.LastName != nil {
+		person.LastName = input.LastName
+	}
+	if input.Cedula != nil {
+		person.Cedula = input.Cedula
+	}
+	if input.Sex != nil {
+		person.Sex = input.Sex
+	}
+	if input.AgeApprox != nil {
+		person.AgeApprox = input.AgeApprox
+	}
+	if input.Status != nil {
+		person.Status = *input.Status
+	}
+	if input.RescueEstadoID != nil {
+		person.RescueEstadoID = *input.RescueEstadoID
+	}
+	if input.RescueMunicipioID != nil {
+		person.RescueMunicipioID = *input.RescueMunicipioID
+	}
+	if input.RescueParroquiaID != nil {
+		person.RescueParroquiaID = input.RescueParroquiaID
+	}
+	if input.CenterID != nil {
+		person.CenterID = *input.CenterID
+	}
+	if input.Contacts != nil {
+		contacts := string(*input.Contacts)
+		person.Contacts = &contacts
+	}
+	if input.Notes != nil {
+		person.Notes = *input.Notes
+	}
+
+	if err := s.store.Update(ctx, person); err != nil {
+		span.RecordError(err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("update person: %w", contracts.ErrNotFound)
+		}
+		span.SetStatus(codes.Error, "update person failure")
+		return nil, fmt.Errorf("update person: %w", err)
+	}
+
+	if s.searchEngine != nil {
+		doc := PersonToSearchDoc(person)
+		if err := s.searchEngine.Index(ctx, "persons", doc); err != nil {
+			slog.WarnContext(ctx, "failed to index person after update", "id", id, "err", err)
+		}
+	}
+
+	return s.GetByID(ctx, id)
+}
+
+func (s *personsService) SoftDelete(ctx context.Context, id uuid.UUID) error {
+	tracer := otel.Tracer(serviceTracerName)
+	ctx, span := tracer.Start(ctx, "SoftDeletePerson")
+	defer span.End()
+	span.SetAttributes(attribute.String("person.id", id.String()))
+
+	if err := s.store.SoftDelete(ctx, id); err != nil {
+		span.RecordError(err)
+		if err == sql.ErrNoRows {
+			span.SetStatus(codes.Error, "soft delete person not found")
+			return fmt.Errorf("soft delete person: %w", contracts.ErrNotFound)
+		}
+		span.SetStatus(codes.Error, "soft delete person failure")
+		return fmt.Errorf("soft delete person: %w", err)
+	}
+
+	if s.searchEngine != nil {
+		if err := s.searchEngine.Delete(ctx, "persons", id.String()); err != nil {
+			slog.WarnContext(ctx, "failed to delete person from search index", "id", id, "err", err)
+		}
+	}
+
+	return nil
 }
 
 func personRowToResponse(row PersonRow) PersonResponse {
