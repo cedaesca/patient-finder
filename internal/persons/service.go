@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cedaesca/patient-finder/internal/contracts"
+	"github.com/cedaesca/patient-finder/internal/search"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -42,14 +43,23 @@ type PersonResponse struct {
 
 type PersonsService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error)
+	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error)
+}
+
+type SearchFilters struct {
+	Sex          string
+	EstadoID     string
+	MunicipioID  string
+	ParroquiaID  string
 }
 
 type personsService struct {
-	store PersonsStore
+	store        PersonsStore
+	searchEngine search.Engine
 }
 
-func NewPersonsService(store PersonsStore) PersonsService {
-	return &personsService{store: store}
+func NewPersonsService(store PersonsStore, searchEngine search.Engine) PersonsService {
+	return &personsService{store: store, searchEngine: searchEngine}
 }
 
 func (s *personsService) GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error) {
@@ -100,4 +110,107 @@ func (s *personsService) GetByID(ctx context.Context, id uuid.UUID) (*PersonResp
 	}
 
 	return res, nil
+}
+
+func (s *personsService) Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error) {
+	tracer := otel.Tracer(serviceTracerName)
+	ctx, span := tracer.Start(ctx, "SearchPersons")
+	defer span.End()
+
+	if s.searchEngine == nil {
+		span.SetStatus(codes.Error, "search engine not available")
+		return nil, 0, fmt.Errorf("search unavailable")
+	}
+
+	tsFilters := buildTSFilters(filters)
+	hits, total, err := s.searchEngine.Search(ctx, "persons", query, page, pageSize, tsFilters)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "search persons failure")
+		return nil, 0, fmt.Errorf("search persons: %w", err)
+	}
+
+	if len(hits) == 0 {
+		return []PersonResponse{}, 0, nil
+	}
+
+	ids := make([]uuid.UUID, 0, len(hits))
+	for _, hit := range hits {
+		code, _ := hit.Document["code"].(string)
+		if code != "" {
+			if id, err := uuid.Parse(code); err == nil {
+				ids = append(ids, id)
+			}
+		}
+	}
+
+	rows, err := s.store.GetByIDs(ctx, ids)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "get persons by ids failure")
+		return nil, 0, fmt.Errorf("get persons: %w", err)
+	}
+
+	byID := make(map[uuid.UUID]PersonResponse, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = personRowToResponse(row)
+	}
+
+	results := make([]PersonResponse, 0, len(ids))
+	for _, id := range ids {
+		if p, ok := byID[id]; ok {
+			results = append(results, p)
+		}
+	}
+
+	return results, total, nil
+}
+
+func personRowToResponse(row PersonRow) PersonResponse {
+	res := PersonResponse{
+		ID:              row.ID,
+		FirstName:       row.FirstName,
+		LastName:        row.LastName,
+		Cedula:          row.Cedula,
+		Sex:             row.Sex,
+		AgeApprox:       row.AgeApprox,
+		Status:          row.Status,
+		AdmittedAt:      row.AdmittedAt,
+		RescueEstado:    row.RescueEstadoName,
+		RescueMunicipio: row.RescueMunicipioName,
+		RescueParroquia: row.RescueParroquiaName,
+		Center: CenterSummary{
+			ID:   row.CenterID,
+			Name: row.CenterName,
+			Type: row.CenterType,
+		},
+		Notes:     row.Notes,
+		CreatedAt: row.CreatedAt,
+	}
+	if row.Contacts != nil {
+		contacts := json.RawMessage(*row.Contacts)
+		res.Contacts = &contacts
+	}
+	if row.CenterContacts != nil {
+		cc := json.RawMessage(*row.CenterContacts)
+		res.Center.Contacts = &cc
+	}
+	return res
+}
+
+func buildTSFilters(filters SearchFilters) map[string]string {
+	m := make(map[string]string)
+	if filters.Sex != "" {
+		m["sex"] = filters.Sex
+	}
+	if filters.EstadoID != "" {
+		m["rescue_estado_id"] = filters.EstadoID
+	}
+	if filters.MunicipioID != "" {
+		m["rescue_municipio_id"] = filters.MunicipioID
+	}
+	if filters.ParroquiaID != "" {
+		m["rescue_parroquia_id"] = filters.ParroquiaID
+	}
+	return m
 }

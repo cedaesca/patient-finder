@@ -7,6 +7,7 @@ import (
 	"github.com/cedaesca/patient-finder/internal/geography"
 	"github.com/cedaesca/patient-finder/internal/otp"
 	"github.com/cedaesca/patient-finder/internal/persons"
+	"github.com/cedaesca/patient-finder/internal/search"
 	"github.com/cedaesca/patient-finder/internal/users"
 )
 
@@ -19,7 +20,7 @@ type Services struct {
 	Persons   persons.PersonsService
 }
 
-func (a *Application) InitServices() {
+func (a *Application) InitServices(searchEngine search.Engine) {
 	otpService := otp.NewService(a.Stores.EmailOtpRequests())
 
 	authService := auth.NewAuthService(
@@ -37,7 +38,7 @@ func (a *Application) InitServices() {
 	auditService := audit.NewAuditService(a.Stores.Audit())
 	geographyService := geography.NewGeographyService(a.Stores.Geography())
 	centersService := centers.NewCentersService(a.Stores.Centers())
-	personsService := persons.NewPersonsService(a.Stores.Persons())
+	personsService := persons.NewPersonsService(a.Stores.Persons(), searchEngine)
 
 	a.Services = Services{
 		Auth:      authService,
