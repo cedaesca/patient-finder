@@ -41,6 +41,18 @@ services:
       - default
       - proxy
 
+  import:
+    image: registry.lupicrm.com/cedaesca/patient-finder:${API_IMAGE_TAG:-latest}
+    restart: "no"
+    env_file:
+      - .env
+    entrypoint: ["/app/import"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./pacientes.xlsx:/app/pacientes.xlsx:ro
+
   psql:
     image: postgres:18.3-alpine3.23
     restart: unless-stopped
