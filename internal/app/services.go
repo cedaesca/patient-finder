@@ -46,7 +46,7 @@ func (a *Application) InitServices(searchEngine search.Engine) {
 	auditService := audit.NewAuditService(a.Stores.Audit())
 	geographyService := geography.NewGeographyService(a.Stores.Geography())
 	centersService := centers.NewCentersService(a.Stores.Centers(), transactor, a.Stores.Audit(), geographyService)
-	personsService := persons.NewPersonsService(a.Stores.Persons(), searchEngine)
+	personsService := persons.NewPersonsService(a.Stores.Persons(), searchEngine, transactor, a.Stores.Audit(), geographyService)
 
 	a.Services = Services{
 		Auth:      authService,
