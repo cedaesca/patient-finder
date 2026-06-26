@@ -3,7 +3,6 @@ package persons
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,65 +19,67 @@ import (
 const serviceTracerName = "PersonsService"
 
 type CenterSummary struct {
-	ID       uuid.UUID        `json:"id"`
-	Name     string           `json:"name"`
-	Type     string           `json:"type"`
-	Contacts *json.RawMessage `json:"contacts"`
+	ID       uuid.UUID `json:"id"`
+	Name     string    `json:"name"`
+	Type     string    `json:"type"`
+	Contacts *string   `json:"contacts"`
 }
 
 type PersonResponse struct {
-	ID              uuid.UUID        `json:"id"`
-	FirstName       *string          `json:"first_name"`
-	LastName        *string          `json:"last_name"`
-	Cedula          *string          `json:"cedula"`
-	Sex             *string          `json:"sex"`
-	AgeApprox       *int             `json:"age_approx"`
-	Status          string           `json:"status"`
-	AdmittedAt      time.Time        `json:"admitted_at"`
-	RescueEstado    string           `json:"rescue_estado"`
-	RescueMunicipio string           `json:"rescue_municipio"`
-	RescueParroquia *string          `json:"rescue_parroquia"`
-	Center          CenterSummary    `json:"center"`
-	Notes           string           `json:"notes"`
-	Contacts        *json.RawMessage `json:"contacts"`
-	CreatedAt       time.Time        `json:"created_at"`
+	ID              uuid.UUID     `json:"id"`
+	FirstName       *string       `json:"first_name"`
+	LastName        *string       `json:"last_name"`
+	Cedula          *string       `json:"cedula"`
+	Sex             *string       `json:"sex"`
+	AgeApprox       *int          `json:"age_approx"`
+	Status          string        `json:"status"`
+	AdmittedAt      time.Time     `json:"admitted_at"`
+	RescueEstado    string        `json:"rescue_estado"`
+	RescueMunicipio string        `json:"rescue_municipio"`
+	RescueParroquia *string       `json:"rescue_parroquia"`
+	Center          CenterSummary `json:"center"`
+	Notes           string        `json:"notes"`
+	Contacts        *string       `json:"contacts"`
+	CreatedAt       time.Time     `json:"created_at"`
 }
 
 type CreatePersonInput struct {
-	FirstName         *string          `json:"first_name"`
-	LastName          *string          `json:"last_name"`
-	Cedula            *string          `json:"cedula"`
-	Sex               *string          `json:"sex"`
-	AgeApprox         *int             `json:"age_approx"`
-	Status            string           `json:"status"`
-	AdmittedAt        time.Time        `json:"admitted_at"`
-	RescueEstadoID    uuid.UUID        `json:"rescue_estado_id"`
-	RescueMunicipioID uuid.UUID        `json:"rescue_municipio_id"`
-	RescueParroquiaID *uuid.UUID       `json:"rescue_parroquia_id"`
-	CenterID          uuid.UUID        `json:"center_id"`
-	Contacts          *json.RawMessage `json:"contacts"`
-	Notes             string           `json:"notes"`
+	FirstName         *string    `json:"first_name"`
+	LastName          *string    `json:"last_name"`
+	Cedula            *string    `json:"cedula"`
+	Sex               *string    `json:"sex"`
+	AgeApprox         *int       `json:"age_approx"`
+	Status            string     `json:"status"`
+	AdmittedAt        time.Time  `json:"admitted_at"`
+	RescueEstadoID    uuid.UUID  `json:"rescue_estado_id"`
+	RescueMunicipioID uuid.UUID  `json:"rescue_municipio_id"`
+	RescueParroquiaID *uuid.UUID `json:"rescue_parroquia_id"`
+	CenterID          uuid.UUID  `json:"center_id"`
+	Contacts          *string    `json:"contacts"`
+	Notes             string     `json:"notes"`
+	Source            *string    `json:"source"`
+	SourceID          *string    `json:"source_id"`
 }
 
 type UpdatePersonInput struct {
-	FirstName         *string          `json:"first_name"`
-	LastName          *string          `json:"last_name"`
-	Cedula            *string          `json:"cedula"`
-	Sex               *string          `json:"sex"`
-	AgeApprox         *int             `json:"age_approx"`
-	Status            *string          `json:"status"`
-	RescueEstadoID    *uuid.UUID       `json:"rescue_estado_id"`
-	RescueMunicipioID *uuid.UUID       `json:"rescue_municipio_id"`
-	RescueParroquiaID *uuid.UUID       `json:"rescue_parroquia_id"`
-	CenterID          *uuid.UUID       `json:"center_id"`
-	Contacts          *json.RawMessage `json:"contacts"`
-	Notes             *string          `json:"notes"`
+	FirstName         *string    `json:"first_name"`
+	LastName          *string    `json:"last_name"`
+	Cedula            *string    `json:"cedula"`
+	Sex               *string    `json:"sex"`
+	AgeApprox         *int       `json:"age_approx"`
+	Status            *string    `json:"status"`
+	RescueEstadoID    *uuid.UUID `json:"rescue_estado_id"`
+	RescueMunicipioID *uuid.UUID `json:"rescue_municipio_id"`
+	RescueParroquiaID *uuid.UUID `json:"rescue_parroquia_id"`
+	CenterID          *uuid.UUID `json:"center_id"`
+	Contacts          *string    `json:"contacts"`
+	Notes             *string    `json:"notes"`
 }
 
 type PersonsService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error)
 	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error)
-	Create(ctx context.Context, input CreatePersonInput, createdBy uuid.UUID) (*PersonResponse, error)
+	Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error)
 	Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput) (*PersonResponse, error)
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 }
@@ -138,12 +139,10 @@ func (s *personsService) GetByID(ctx context.Context, id uuid.UUID) (*PersonResp
 	}
 
 	if row.Contacts != nil {
-		contacts := json.RawMessage(*row.Contacts)
-		res.Contacts = &contacts
+		res.Contacts = row.Contacts
 	}
 	if row.CenterContacts != nil {
-		cc := json.RawMessage(*row.CenterContacts)
-		res.Center.Contacts = &cc
+		res.Center.Contacts = row.CenterContacts
 	}
 
 	return res, nil
@@ -203,11 +202,13 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 	return results, total, nil
 }
 
-func (s *personsService) Create(ctx context.Context, input CreatePersonInput, createdBy uuid.UUID) (*PersonResponse, error) {
+func (s *personsService) Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error) {
 	tracer := otel.Tracer(serviceTracerName)
 	ctx, span := tracer.Start(ctx, "CreatePerson")
 	defer span.End()
-	span.SetAttributes(attribute.String("created_by", createdBy.String()))
+	if createdBy != nil {
+		span.SetAttributes(attribute.String("created_by", createdBy.String()))
+	}
 
 	person := &Person{
 		FirstName:         input.FirstName,
@@ -221,8 +222,11 @@ func (s *personsService) Create(ctx context.Context, input CreatePersonInput, cr
 		RescueMunicipioID: input.RescueMunicipioID,
 		RescueParroquiaID: input.RescueParroquiaID,
 		CenterID:          input.CenterID,
+		Contacts:          input.Contacts,
 		Notes:             input.Notes,
 		CreatedBy:         createdBy,
+		Source:            input.Source,
+		SourceID:          input.SourceID,
 	}
 	if person.AdmittedAt.IsZero() {
 		person.AdmittedAt = time.Now()
@@ -295,8 +299,7 @@ func (s *personsService) Update(ctx context.Context, id uuid.UUID, input UpdateP
 		person.CenterID = *input.CenterID
 	}
 	if input.Contacts != nil {
-		contacts := string(*input.Contacts)
-		person.Contacts = &contacts
+		person.Contacts = input.Contacts
 	}
 	if input.Notes != nil {
 		person.Notes = *input.Notes
@@ -368,12 +371,10 @@ func personRowToResponse(row PersonRow) PersonResponse {
 		CreatedAt: row.CreatedAt,
 	}
 	if row.Contacts != nil {
-		contacts := json.RawMessage(*row.Contacts)
-		res.Contacts = &contacts
+		res.Contacts = row.Contacts
 	}
 	if row.CenterContacts != nil {
-		cc := json.RawMessage(*row.CenterContacts)
-		res.Center.Contacts = &cc
+		res.Center.Contacts = row.CenterContacts
 	}
 	return res
 }

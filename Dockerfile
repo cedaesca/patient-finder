@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.26.1-alpine3.23 AS builder
+FROM golang:1.25-alpine3.22 AS builder
 
 WORKDIR /src
 
@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=linux \
     go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
-FROM alpine:3.23
+FROM alpine:3.22
 
 RUN apk add --no-cache ca-certificates tzdata wget \
  && adduser -D -u 10001 app

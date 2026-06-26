@@ -30,10 +30,12 @@ type Person struct {
 	CenterID          uuid.UUID  `json:"center_id"`
 	Contacts          *string    `json:"-"`
 	Notes             string     `json:"notes"`
-	CreatedBy         uuid.UUID  `json:"created_by"`
+	CreatedBy         *uuid.UUID `json:"created_by"`
 	CreatedAt         time.Time  `json:"created_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 	DeletedAt         *time.Time `json:"deleted_at"`
+	Source            *string    `json:"source"`
+	SourceID          *string    `json:"source_id"`
 }
 
 type PersonRow struct {
@@ -70,6 +72,7 @@ func (s *PostgresPersonsStore) GetByID(ctx context.Context, id uuid.UUID) (*Pers
 			p.status, p.admitted_at,
 			p.rescue_estado_id, p.rescue_municipio_id, p.rescue_parroquia_id,
 			p.center_id, p.contacts, p.notes, p.created_by, p.created_at, p.updated_at, p.deleted_at,
+			p.source, p.source_id,
 			c.name, c.type, c.contacts,
 			e.name, m.name, pr.name
 		FROM persons p
@@ -90,6 +93,7 @@ func (s *PostgresPersonsStore) GetByID(ctx context.Context, id uuid.UUID) (*Pers
 		&r.Status, &r.AdmittedAt,
 		&r.RescueEstadoID, &r.RescueMunicipioID, &r.RescueParroquiaID,
 		&r.CenterID, &r.Contacts, &r.Notes, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
+		&r.Source, &r.SourceID,
 		&r.CenterName, &r.CenterType, &r.CenterContacts,
 		&r.RescueEstadoName, &r.RescueMunicipioName, &r.RescueParroquiaName)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -115,6 +119,7 @@ func (s *PostgresPersonsStore) GetByIDs(ctx context.Context, ids []uuid.UUID) ([
 			p.status, p.admitted_at,
 			p.rescue_estado_id, p.rescue_municipio_id, p.rescue_parroquia_id,
 			p.center_id, p.contacts, p.notes, p.created_by, p.created_at, p.updated_at, p.deleted_at,
+			p.source, p.source_id,
 			c.name, c.type, c.contacts,
 			e.name, m.name, pr.name
 		FROM persons p
@@ -145,6 +150,7 @@ func (s *PostgresPersonsStore) GetByIDs(ctx context.Context, ids []uuid.UUID) ([
 			&r.Status, &r.AdmittedAt,
 			&r.RescueEstadoID, &r.RescueMunicipioID, &r.RescueParroquiaID,
 			&r.CenterID, &r.Contacts, &r.Notes, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
+			&r.Source, &r.SourceID,
 			&r.CenterName, &r.CenterType, &r.CenterContacts,
 			&r.RescueEstadoName, &r.RescueMunicipioName, &r.RescueParroquiaName); err != nil {
 			span.RecordError(err)
@@ -192,8 +198,8 @@ func (s *PostgresPersonsStore) Create(ctx context.Context, person *Person) error
 	const query = `
 		INSERT INTO persons (first_name, last_name, cedula, sex, age_approx, status, admitted_at,
 			rescue_estado_id, rescue_municipio_id, rescue_parroquia_id,
-			center_id, contacts, notes, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+			center_id, contacts, notes, created_by, source, source_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		RETURNING id, created_at, updated_at`
 	tracer := otel.Tracer(storeTracerName)
 	ctx, span := tracer.Start(ctx, "CreatePerson")
@@ -206,6 +212,7 @@ func (s *PostgresPersonsStore) Create(ctx context.Context, person *Person) error
 		person.Status, person.AdmittedAt,
 		person.RescueEstadoID, person.RescueMunicipioID, person.RescueParroquiaID,
 		person.CenterID, person.Contacts, person.Notes, person.CreatedBy,
+		person.Source, person.SourceID,
 	).Scan(&person.ID, &person.CreatedAt, &person.UpdatedAt)
 	if err != nil {
 		span.RecordError(err)
