@@ -101,6 +101,7 @@ func (s *Server) registerPublicRoutes(r chi.Router) {
 	r.Get("/health", s.healthHandler)
 
 	s.app.Handlers.Auth.RegisterRoutes(r)
+	s.app.Handlers.Geography.RegisterRoutes(r)
 }
 
 func (s *Server) registerPrivateRoutes(r chi.Router) {
