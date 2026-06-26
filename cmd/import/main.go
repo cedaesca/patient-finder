@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"regexp"
@@ -127,26 +125,19 @@ func main() {
 			continue
 		}
 
-		var contacts *json.RawMessage
+		var contacts *string
 		if len(row) > 5 {
 			phone := strings.TrimSpace(row[5])
 			if phone != "" {
-				raw := json.RawMessage(fmt.Sprintf(`[{"type":"phone","value":"%s"}]`, phone))
-				contacts = &raw
+				contacts = &phone
 			}
 		}
 
-		var notesParts []string
-		if len(row) > 6 {
-			addr := strings.TrimSpace(row[6])
-			if addr != "" {
-				notesParts = append(notesParts, "Dirección: "+addr)
-			}
-		}
+		var notes string
 		if len(row) > 7 {
 			obs := strings.TrimSpace(row[7])
 			if obs != "" {
-				notesParts = append(notesParts, "Observaciones: "+obs)
+				notes = "Observaciones: " + obs
 			}
 		}
 
@@ -168,7 +159,7 @@ func main() {
 			RescueParroquiaID: &rescueParroquiaID,
 			CenterID:          centerID,
 			Contacts:          contacts,
-			Notes:             strings.Join(notesParts, " | "),
+			Notes:             notes,
 			Source:            &source,
 			SourceID:          &sourceID,
 		}
