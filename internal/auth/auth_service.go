@@ -79,7 +79,6 @@ type CompleteRegistrationInput struct {
 	Email             string
 	Name              string
 	LastName          string
-	Locale            string
 	Password          string
 	VerificationToken string
 }
@@ -177,7 +176,6 @@ func (s *authService) CompleteRegistration(ctx context.Context, input CompleteRe
 		Email:    input.Email,
 		Name:     input.Name,
 		LastName: input.LastName,
-		Locale:   input.Locale,
 	}
 
 	err = user.PasswordHash.Set(input.Password)

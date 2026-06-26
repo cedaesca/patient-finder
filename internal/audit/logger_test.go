@@ -37,30 +37,25 @@ func TestAuditLogger_Log_WritesEntry(t *testing.T) {
 	store := &fakeAuditStore{inserts: make(chan *Event, 1)}
 	logger := NewAuditLogger(store)
 
-	teamID := uuid.New()
 	userID := uuid.New()
 	resourceID := uuid.New()
 
 	logger.Log(context.Background(), Entry{
-		TeamID:       teamID,
 		UserID:       &userID,
 		Action:       ActionCreate,
-		ResourceType: "contact",
+		ResourceType: "user",
 		ResourceID:   &resourceID,
 	})
 
 	select {
 	case got := <-store.inserts:
-		if got.TeamID != teamID {
-			t.Fatalf("team id mismatch: got %s want %s", got.TeamID, teamID)
-		}
 		if got.UserID == nil || *got.UserID != userID {
 			t.Fatalf("user id mismatch: got %+v want %s", got.UserID, userID)
 		}
 		if got.Action != ActionCreate {
 			t.Fatalf("action mismatch: got %q want %q", got.Action, ActionCreate)
 		}
-		if got.ResourceType != "contact" {
+		if got.ResourceType != "user" {
 			t.Fatalf("resource type mismatch: got %q", got.ResourceType)
 		}
 		if got.ResourceID == nil || *got.ResourceID != resourceID {
@@ -71,9 +66,6 @@ func TestAuditLogger_Log_WritesEntry(t *testing.T) {
 	}
 }
 
-// The caller's ctx can be cancelled before the async write runs (e.g. the HTTP
-// request finished and chi cancelled the request ctx). The audit write must
-// still succeed — that's the whole point of detaching the ctx inside GoSafe.
 func TestAuditLogger_Log_SurvivesCancelledCallerContext(t *testing.T) {
 	store := &fakeAuditStore{inserts: make(chan *Event, 1)}
 	logger := NewAuditLogger(store)
@@ -81,7 +73,7 @@ func TestAuditLogger_Log_SurvivesCancelledCallerContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	logger.Log(ctx, Entry{TeamID: uuid.New(), Action: ActionCreate, ResourceType: "contact"})
+	logger.Log(ctx, Entry{Action: ActionCreate, ResourceType: "user"})
 
 	select {
 	case <-store.inserts:
@@ -90,8 +82,6 @@ func TestAuditLogger_Log_SurvivesCancelledCallerContext(t *testing.T) {
 	}
 }
 
-// If the store panics, GoSafe must recover so the server doesn't crash. The
-// test is implicit: if recovery didn't work, the test binary would exit.
 func TestAuditLogger_Log_StorePanicIsRecovered(t *testing.T) {
 	done := make(chan struct{})
 	store := &fakeAuditStore{
@@ -101,14 +91,13 @@ func TestAuditLogger_Log_StorePanicIsRecovered(t *testing.T) {
 		},
 	}
 	logger := NewAuditLogger(store)
-	logger.Log(context.Background(), Entry{TeamID: uuid.New(), Action: ActionCreate, ResourceType: "contact"})
+	logger.Log(context.Background(), Entry{Action: ActionCreate, ResourceType: "user"})
 
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("insert never called")
 	}
-	// If we got here without the process dying, recover worked.
 }
 
 func TestAuditLogger_Log_StoreErrorDoesNotBlockCaller(t *testing.T) {
@@ -120,7 +109,7 @@ func TestAuditLogger_Log_StoreErrorDoesNotBlockCaller(t *testing.T) {
 		},
 	}
 	logger := NewAuditLogger(store)
-	logger.Log(context.Background(), Entry{TeamID: uuid.New(), Action: ActionCreate, ResourceType: "contact"})
+	logger.Log(context.Background(), Entry{Action: ActionCreate, ResourceType: "user"})
 
 	select {
 	case <-done:

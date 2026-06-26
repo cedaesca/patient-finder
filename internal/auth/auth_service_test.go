@@ -12,6 +12,7 @@ import (
 	"github.com/golang-jwt/jwt/v4"
 	"github.com/google/uuid"
 	"github.com/cedaesca/patient-finder/internal/otp"
+	"github.com/cedaesca/patient-finder/internal/pagination"
 	"github.com/cedaesca/patient-finder/internal/users"
 	"github.com/stretchr/testify/require"
 )
@@ -239,7 +240,6 @@ func TestAuthService_CompleteRegistration(t *testing.T) {
 			Name:              "User",
 			LastName:          "Test",
 			Password:          "password",
-			Locale:            "es",
 		})
 		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
 	})
@@ -254,7 +254,6 @@ func TestAuthService_CompleteRegistration(t *testing.T) {
 			Name:              "User",
 			LastName:          "Test",
 			Password:          "password",
-			Locale:            "es",
 		})
 		require.ErrorIs(t, err, ErrInvalidRegistrationToken)
 	})
@@ -274,7 +273,6 @@ func TestAuthService_CompleteRegistration(t *testing.T) {
 			Name:              "User",
 			LastName:          "Test",
 			Password:          "password",
-			Locale:            "es",
 		})
 		require.ErrorIs(t, err, expectedErr)
 	})
@@ -294,7 +292,6 @@ func TestAuthService_CompleteRegistration(t *testing.T) {
 			Name:              "User",
 			LastName:          "Test",
 			Password:          "password",
-			Locale:            "es",
 		})
 		require.NoError(t, err)
 		require.Equal(t, "user@example.com", user.Email)
@@ -540,14 +537,6 @@ type userStoreMock struct {
 	updateUserFn     func(context.Context, *users.User) error
 	getUserByIDFn    func(context.Context, uuid.UUID) (*users.User, error)
 	updatePasswordFn func(context.Context, uuid.UUID, []byte) error
-	markOnboardedFn  func(context.Context, uuid.UUID) error
-}
-
-func (m *userStoreMock) MarkOnboarded(ctx context.Context, id uuid.UUID) error {
-	if m.markOnboardedFn == nil {
-		panic("MarkOnboarded called unexpectedly")
-	}
-	return m.markOnboardedFn(ctx, id)
 }
 
 func (m *userStoreMock) CreateUser(ctx context.Context, user *users.User) error {
@@ -584,6 +573,14 @@ func (m *userStoreMock) UpdateUserPassword(ctx context.Context, id uuid.UUID, pa
 	}
 
 	return m.updatePasswordFn(ctx, id, passwordHash)
+}
+
+func (m *userStoreMock) ListUsers(ctx context.Context, filters pagination.Filters) ([]users.User, int, error) {
+	panic("ListUsers called unexpectedly")
+}
+
+func (m *userStoreMock) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
+	panic("SoftDeleteUser called unexpectedly")
 }
 
 type refreshTokenStoreMock struct {
