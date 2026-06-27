@@ -11,6 +11,7 @@ import (
 	"github.com/cedaesca/patient-finder/internal/audit"
 	"github.com/cedaesca/patient-finder/internal/contracts"
 	"github.com/cedaesca/patient-finder/internal/database"
+	"github.com/cedaesca/patient-finder/internal/pagination"
 	"github.com/cedaesca/patient-finder/internal/search"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
@@ -91,6 +92,7 @@ type GeographyExistsChecker interface {
 type PersonsService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error)
 	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error)
+	List(ctx context.Context, input ListPersonsInput, page, pageSize int) ([]PersonResponse, pagination.Metadata, error)
 	Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error)
 	Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput, actorID uuid.UUID, expectedCenterID *uuid.UUID) (*PersonResponse, error)
 	SoftDelete(ctx context.Context, id uuid.UUID, actorID uuid.UUID, expectedCenterID *uuid.UUID) error
@@ -221,6 +223,27 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 	}
 
 	return results, total, nil
+}
+
+func (s *personsService) List(ctx context.Context, input ListPersonsInput, page, pageSize int) ([]PersonResponse, pagination.Metadata, error) {
+	tracer := otel.Tracer(serviceTracerName)
+	ctx, span := tracer.Start(ctx, "ListPersons")
+	defer span.End()
+
+	rows, total, err := s.store.List(ctx, input, page, pageSize)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "list persons failure")
+		return nil, pagination.Metadata{}, err
+	}
+
+	results := make([]PersonResponse, 0, len(rows))
+	for _, row := range rows {
+		results = append(results, personRowToResponse(row))
+	}
+
+	meta := pagination.CalculateMetadata(total, page, pageSize)
+	return results, meta, nil
 }
 
 func (s *personsService) Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error) {

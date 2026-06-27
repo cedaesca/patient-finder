@@ -45,6 +45,7 @@ func (h *PersonsHandler) RegisterRoutes(r chi.Router) {
 		r.Get("/{id}", h.HandleGetPerson)
 		r.Group(func(mw chi.Router) {
 			mw.Use(request.RequireAuthenticated)
+			mw.Get("/", h.HandleListPersons)
 			mw.Post("/", h.HandleCreatePerson)
 			mw.Put("/{id}", h.HandleUpdatePerson)
 			mw.Delete("/{id}", h.HandleDeletePerson)
@@ -121,6 +122,81 @@ func (h *PersonsHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 	utils.HandleDataWithPaginationResponse(w, http.StatusOK,
 		utils.ResponseData{"persons": results},
 		pagination.CalculateMetadata(total, page, pageSize),
+	)
+}
+
+func (h *PersonsHandler) HandleListPersons(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	span := trace.SpanFromContext(ctx)
+	span.SetName("GET /persons")
+
+	actorID, err := request.RequiredUserID(ctx)
+	if err != nil {
+		utils.WriteJSON(w, http.StatusUnauthorized, utils.Envelope{"message": contracts.ErrUnauthorized.Error()})
+		return
+	}
+
+	var centerID *uuid.UUID
+	if cid := r.URL.Query().Get("center_id"); cid != "" {
+		parsed, err := uuid.Parse(cid)
+		if err != nil {
+			utils.WriteJSON(w, http.StatusBadRequest, utils.Envelope{"message": "invalid center_id parameter"})
+			return
+		}
+		centerID = &parsed
+	}
+
+	allowed, err := h.guard.HasPermission(ctx, actorID, permissions.PatientsRead, centerID)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "permission check failure")
+		slog.ErrorContext(ctx, "HandleListPersons", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+	if !allowed {
+		utils.WriteJSON(w, http.StatusForbidden, utils.Envelope{"message": contracts.ErrForbidden.Error()})
+		return
+	}
+
+	page := request.ReadIntQueryParam(r, "page", 1)
+	pageSize := request.ReadIntQueryParam(r, "page_size", 20)
+
+	input := ListPersonsInput{
+		CenterID: centerID,
+	}
+
+	if eid := r.URL.Query().Get("estado_id"); eid != "" {
+		parsed, err := uuid.Parse(eid)
+		if err == nil {
+			input.EstadoID = &parsed
+		}
+	}
+	if mid := r.URL.Query().Get("municipio_id"); mid != "" {
+		parsed, err := uuid.Parse(mid)
+		if err == nil {
+			input.MunicipioID = &parsed
+		}
+	}
+	if pid := r.URL.Query().Get("parroquia_id"); pid != "" {
+		parsed, err := uuid.Parse(pid)
+		if err == nil {
+			input.ParroquiaID = &parsed
+		}
+	}
+
+	persons, meta, err := h.service.List(ctx, input, page, pageSize)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "list persons failure")
+		slog.ErrorContext(ctx, "HandleListPersons", "err", err)
+		utils.WriteJSON(w, http.StatusInternalServerError, utils.Envelope{"message": "internal server error"})
+		return
+	}
+
+	utils.HandleDataWithPaginationResponse(w, http.StatusOK,
+		utils.ResponseData{"persons": persons},
+		meta,
 	)
 }
 
