@@ -94,7 +94,7 @@ func (e *Engine) Delete(ctx context.Context, collection, code string) error {
 	return err
 }
 
-func (e *Engine) Search(ctx context.Context, collection, query string, page, pageSize int, filters map[string]string) ([]search.SearchHit, int, int, error) {
+func (e *Engine) Search(ctx context.Context, collection, query string, page, pageSize int, filters map[string]string) ([]search.SearchHit, int, error) {
 	q := query
 	queryBy := "search_text"
 	pagePtr := page
@@ -115,7 +115,7 @@ func (e *Engine) Search(ctx context.Context, collection, query string, page, pag
 
 	res, err := e.client.Collection(collection).Documents().Search(ctx, params)
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("typesense search: %w", err)
+		return nil, 0, fmt.Errorf("typesense search: %w", err)
 	}
 
 	hits := make([]search.SearchHit, 0)
@@ -143,12 +143,7 @@ func (e *Engine) Search(ctx context.Context, collection, query string, page, pag
 		found = *res.Found
 	}
 
-	searchTimeMs := 0
-	if res.SearchTimeMs != nil {
-		searchTimeMs = *res.SearchTimeMs
-	}
-
-	return hits, found, searchTimeMs, nil
+	return hits, found, nil
 }
 
 func (e *Engine) ReindexAll(ctx context.Context, collection string, docs []search.SearchDoc) error {

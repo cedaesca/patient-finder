@@ -6,7 +6,7 @@ type Engine interface {
 	CreateCollection(ctx context.Context, config CollectionConfig) error
 	Index(ctx context.Context, collection string, doc SearchDoc) error
 	Delete(ctx context.Context, collection, code string) error
-	Search(ctx context.Context, collection, query string, page, pageSize int, filters map[string]string) ([]SearchHit, int, int, error)
+	Search(ctx context.Context, collection, query string, page, pageSize int, filters map[string]string) ([]SearchHit, int, error)
 	ReindexAll(ctx context.Context, collection string, docs []SearchDoc) error
 	Health(ctx context.Context) error
 }

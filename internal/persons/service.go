@@ -46,7 +46,6 @@ type PersonResponse struct {
 	Notes           string        `json:"notes"`
 	Contacts        *string       `json:"contacts"`
 	CreatedAt       time.Time     `json:"created_at"`
-	Score           *float64      `json:"score,omitempty"`
 }
 
 type CreatePersonInput struct {
@@ -92,7 +91,7 @@ type GeographyExistsChecker interface {
 
 type PersonsService interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonResponse, error)
-	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, int, error)
+	Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error)
 	List(ctx context.Context, input ListPersonsInput, page, pageSize int) ([]PersonResponse, pagination.Metadata, error)
 	Create(ctx context.Context, input CreatePersonInput, createdBy *uuid.UUID) (*PersonResponse, error)
 	Update(ctx context.Context, id uuid.UUID, input UpdatePersonInput, actorID uuid.UUID, expectedCenterID *uuid.UUID) (*PersonResponse, error)
@@ -172,36 +171,34 @@ func (s *personsService) GetByID(ctx context.Context, id uuid.UUID) (*PersonResp
 	return res, nil
 }
 
-func (s *personsService) Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, int, error) {
+func (s *personsService) Search(ctx context.Context, query string, page, pageSize int, filters SearchFilters) ([]PersonResponse, int, error) {
 	tracer := otel.Tracer(serviceTracerName)
 	ctx, span := tracer.Start(ctx, "SearchPersons")
 	defer span.End()
 
 	if s.searchEngine == nil {
 		span.SetStatus(codes.Error, "search engine not available")
-		return nil, 0, 0, fmt.Errorf("search unavailable")
+		return nil, 0, fmt.Errorf("search unavailable")
 	}
 
 	tsFilters := buildTSFilters(filters)
-	hits, total, searchTimeMs, err := s.searchEngine.Search(ctx, "persons", query, page, pageSize, tsFilters)
+	hits, total, err := s.searchEngine.Search(ctx, "persons", query, page, pageSize, tsFilters)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "search persons failure")
-		return nil, 0, 0, fmt.Errorf("search persons: %w", err)
+		return nil, 0, fmt.Errorf("search persons: %w", err)
 	}
 
 	if len(hits) == 0 {
-		return []PersonResponse{}, 0, searchTimeMs, nil
+		return []PersonResponse{}, 0, nil
 	}
 
 	ids := make([]uuid.UUID, 0, len(hits))
-	scores := make(map[uuid.UUID]float64, len(hits))
 	for _, hit := range hits {
 		code, _ := hit.Document["code"].(string)
 		if code != "" {
 			if id, err := uuid.Parse(code); err == nil {
 				ids = append(ids, id)
-				scores[id] = hit.Score
 			}
 		}
 	}
@@ -210,7 +207,7 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "get persons by ids failure")
-		return nil, 0, 0, fmt.Errorf("get persons: %w", err)
+		return nil, 0, fmt.Errorf("get persons: %w", err)
 	}
 
 	byID := make(map[uuid.UUID]PersonResponse, len(rows))
@@ -221,15 +218,11 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 	results := make([]PersonResponse, 0, len(ids))
 	for _, id := range ids {
 		if p, ok := byID[id]; ok {
-			if score, ok := scores[id]; ok {
-				s := score
-				p.Score = &s
-			}
 			results = append(results, p)
 		}
 	}
 
-	return results, total, searchTimeMs, nil
+	return results, total, nil
 }
 
 func (s *personsService) List(ctx context.Context, input ListPersonsInput, page, pageSize int) ([]PersonResponse, pagination.Metadata, error) {

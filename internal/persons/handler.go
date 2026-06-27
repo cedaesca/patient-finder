@@ -110,7 +110,7 @@ func (h *PersonsHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		ParroquiaID:  parroquiaID,
 	}
 
-	results, total, searchTimeMs, err := h.service.Search(ctx, q, page, pageSize, filters)
+	results, total, err := h.service.Search(ctx, q, page, pageSize, filters)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "search persons failure")
@@ -119,14 +119,9 @@ func (h *PersonsHandler) HandleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta := pagination.CalculateMetadata(total, page, pageSize)
-	if searchTimeMs > 0 {
-		meta.SearchTimeMs = &searchTimeMs
-	}
-
 	utils.HandleDataWithPaginationResponse(w, http.StatusOK,
 		utils.ResponseData{"persons": results},
-		meta,
+		pagination.CalculateMetadata(total, page, pageSize),
 	)
 }
 
