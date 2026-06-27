@@ -49,7 +49,7 @@ func (a *Application) InitServices(searchEngine search.Engine) {
 	geographyService := geography.NewGeographyService(a.Stores.Geography())
 	centersService := centers.NewCentersService(a.Stores.Centers(), transactor, a.Stores.Audit(), geographyService)
 	personsService := persons.NewPersonsService(a.Stores.Persons(), searchEngine, transactor, a.Stores.Audit(), geographyService)
-	statsService := stats.NewStatsService(a.Stores.Centers(), a.Stores.Persons(), a.Stores.Users(), a.Stores.Persons())
+	statsService := stats.NewStatsService(a.Stores.Centers(), a.Stores.Persons(), a.Stores.Users(), a.Stores.Persons(), a.Stores.Persons())
 
 	a.Services = Services{
 		Auth:      authService,
