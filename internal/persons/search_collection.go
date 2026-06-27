@@ -23,7 +23,7 @@ var PersonCollection = search.CollectionConfig{
 		QueryBy:        "first_name,last_name,cedula",
 		QueryByWeights: "3,2,4",
 		NumTypos:       "1,1,0",
-		Prefix:         "false",
+		Prefix:         "true",
 	},
 }
 
