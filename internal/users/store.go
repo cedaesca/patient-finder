@@ -99,6 +99,7 @@ type UserStore interface {
 	RemoveAllUserRoles(ctx context.Context, userID uuid.UUID) error
 	AssignUserRole(ctx context.Context, userID, roleID uuid.UUID, centerID *uuid.UUID) error
 	GetRoleInfo(ctx context.Context, name string) (*RoleInfo, error)
+	Count(ctx context.Context) (int, error)
 }
 
 type PostgresUserStore struct {
@@ -506,4 +507,23 @@ func (s *PostgresUserStore) SoftDeleteUser(ctx context.Context, id uuid.UUID) er
 	}
 
 	return nil
+}
+
+func (s *PostgresUserStore) Count(ctx context.Context) (int, error) {
+	const query = `SELECT count(*) FROM users WHERE deleted_at IS NULL`
+
+	tracer := otel.Tracer(userStoreTracerName)
+	ctx, span := tracer.Start(ctx, "CountUsers")
+	defer span.End()
+	database.TagOtelTrace(span, userStoreTable, "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var total int
+	err := exec.QueryRowContext(ctx, query).Scan(&total)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "count users failure")
+		return 0, err
+	}
+	return total, nil
 }
