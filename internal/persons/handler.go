@@ -47,7 +47,7 @@ func (h *PersonsHandler) RegisterRoutes(r chi.Router) {
 			mw.Use(request.RequireAuthenticated)
 			mw.Get("/", h.HandleListPersons)
 			mw.Post("/", h.HandleCreatePerson)
-			mw.Put("/{id}", h.HandleUpdatePerson)
+			mw.Patch("/{id}", h.HandleUpdatePerson)
 			mw.Delete("/{id}", h.HandleDeletePerson)
 		})
 	})
@@ -316,7 +316,7 @@ type updatePersonRequest struct {
 func (h *PersonsHandler) HandleUpdatePerson(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	span := trace.SpanFromContext(ctx)
-	span.SetName("PUT /persons/{id}")
+	span.SetName("PATCH /persons/{id}")
 
 	actorID, err := request.RequiredUserID(ctx)
 	if err != nil {
