@@ -64,6 +64,8 @@ type PersonsStore interface {
 	Create(ctx context.Context, person *Person) error
 	Update(ctx context.Context, person *Person) error
 	SoftDelete(ctx context.Context, id uuid.UUID) error
+	Count(ctx context.Context) (int, error)
+	LatestUpdatedAt(ctx context.Context) (*time.Time, error)
 }
 
 type PostgresPersonsStore struct {
@@ -400,4 +402,42 @@ func pqArray(ids []uuid.UUID) string {
 	}
 	b.WriteByte('}')
 	return b.String()
+}
+
+func (s *PostgresPersonsStore) Count(ctx context.Context) (int, error) {
+	const query = `SELECT count(*) FROM persons WHERE deleted_at IS NULL`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "CountPersons")
+	defer span.End()
+	database.TagOtelTrace(span, "persons", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var total int
+	err := exec.QueryRowContext(ctx, query).Scan(&total)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "count persons failure")
+		return 0, err
+	}
+	return total, nil
+}
+
+func (s *PostgresPersonsStore) LatestUpdatedAt(ctx context.Context) (*time.Time, error) {
+	const query = `SELECT max(updated_at) FROM persons WHERE deleted_at IS NULL`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "LatestUpdatedAt")
+	defer span.End()
+	database.TagOtelTrace(span, "persons", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var updatedAt *time.Time
+	err := exec.QueryRowContext(ctx, query).Scan(&updatedAt)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query latest updated_at failure")
+		return nil, err
+	}
+	return updatedAt, nil
 }

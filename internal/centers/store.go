@@ -35,6 +35,7 @@ type CentersStore interface {
 	Create(ctx context.Context, center *Center) error
 	Update(ctx context.Context, center *Center) error
 	SoftDelete(ctx context.Context, id uuid.UUID) error
+	Count(ctx context.Context) (int, error)
 }
 
 type PostgresCentersStore struct {
@@ -184,4 +185,23 @@ func (s *PostgresCentersStore) SoftDelete(ctx context.Context, id uuid.UUID) err
 		return err
 	}
 	return nil
+}
+
+func (s *PostgresCentersStore) Count(ctx context.Context) (int, error) {
+	const query = `SELECT count(*) FROM centers WHERE is_active = true`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "CountCenters")
+	defer span.End()
+	database.TagOtelTrace(span, "centers", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var total int
+	err := exec.QueryRowContext(ctx, query).Scan(&total)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "count centers failure")
+		return 0, err
+	}
+	return total, nil
 }
