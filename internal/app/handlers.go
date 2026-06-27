@@ -7,7 +7,6 @@ import (
 	"github.com/cedaesca/patient-finder/internal/geography"
 	"github.com/cedaesca/patient-finder/internal/persons"
 	"github.com/cedaesca/patient-finder/internal/roles"
-	"github.com/cedaesca/patient-finder/internal/stats"
 	"github.com/cedaesca/patient-finder/internal/users"
 )
 
@@ -19,7 +18,6 @@ type Handlers struct {
 	Geography *geography.GeographyHandler
 	Centers   *centers.CentersHandler
 	Persons   *persons.PersonsHandler
-	Stats     *stats.StatsHandler
 }
 
 func (a *Application) InitHandlers() {
@@ -30,7 +28,6 @@ func (a *Application) InitHandlers() {
 	geographyHandler := geography.NewGeographyHandler(a.Services.Geography)
 	centersHandler := centers.NewCentersHandler(a.Services.Centers, a.Services.Roles)
 	personsHandler := persons.NewPersonsHandler(a.Services.Persons, a.Services.Roles)
-	statsHandler := stats.NewStatsHandler(a.Services.Stats)
 
 	a.Handlers = Handlers{
 		Auth:      authHandler,
@@ -40,6 +37,5 @@ func (a *Application) InitHandlers() {
 		Geography: geographyHandler,
 		Centers:   centersHandler,
 		Persons:   personsHandler,
-		Stats:     statsHandler,
 	}
 }
