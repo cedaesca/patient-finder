@@ -45,26 +45,9 @@ func NewEngineFromEnv() (*Engine, error) {
 }
 
 func (e *Engine) CreateCollection(ctx context.Context, config search.CollectionConfig) error {
-	fields := make([]api.Field, 0, len(config.Fields)+2)
-	fields = append(fields, api.Field{Name: "id", Type: "string"})
-	fields = append(fields, api.Field{Name: "collection", Type: "string"})
-	for _, f := range config.Fields {
-		t := f.Type
-		if t == "" {
-			t = "string"
-		}
-		field := api.Field{
-			Name:     f.Name,
-			Type:     t,
-			Facet:    &f.Facet,
-			Optional: &f.Optional,
-		}
-		fields = append(fields, field)
-	}
-
 	schema := &api.CollectionSchema{
 		Name:   config.Name,
-		Fields: fields,
+		Fields: buildAPIFields(config),
 	}
 
 	_, err := e.client.Collections().Create(ctx, schema)
@@ -94,9 +77,18 @@ func (e *Engine) Delete(ctx context.Context, collection, code string) error {
 	return err
 }
 
-func (e *Engine) Search(ctx context.Context, collection, query string, page, pageSize int, filters map[string]string) ([]search.SearchHit, int, error) {
+func (e *Engine) Search(ctx context.Context, collection, query string, page, pageSize int, filters map[string]string, searchCfg *search.SearchConfig) ([]search.SearchHit, int, error) {
 	q := query
 	queryBy := "search_text"
+	queryByWeights := ""
+	numTypos := ""
+	prefix := ""
+	if searchCfg != nil {
+		queryBy = searchCfg.QueryBy
+		queryByWeights = searchCfg.QueryByWeights
+		numTypos = searchCfg.NumTypos
+		prefix = searchCfg.Prefix
+	}
 	pagePtr := page
 	perPagePtr := pageSize
 	includeFields := "code"
@@ -108,6 +100,15 @@ func (e *Engine) Search(ctx context.Context, collection, query string, page, pag
 		PerPage:       &perPagePtr,
 		IncludeFields: &includeFields,
 	}
+	if queryByWeights != "" {
+		params.QueryByWeights = &queryByWeights
+	}
+	if numTypos != "" {
+		params.NumTypos = &numTypos
+	}
+	if prefix != "" {
+		params.Prefix = &prefix
+	}
 
 	if filterBy := buildFilterBy(filters); filterBy != "" {
 		params.FilterBy = &filterBy
@@ -118,12 +119,13 @@ func (e *Engine) Search(ctx context.Context, collection, query string, page, pag
 		return nil, 0, fmt.Errorf("typesense search: %w", err)
 	}
 
-	hits := make([]search.SearchHit, 0)
+	var hits []search.SearchHit
 	if res.Hits != nil {
+		hits = make([]search.SearchHit, 0, len(*res.Hits))
 		for _, h := range *res.Hits {
 			score := 0.0
 			if h.TextMatchInfo != nil && h.TextMatchInfo.Score != nil {
-				if s, err := parseScore(*h.TextMatchInfo.Score); err == nil {
+				if s, err := strconv.ParseFloat(*h.TextMatchInfo.Score, 64); err == nil {
 					score = s
 				}
 			}
@@ -146,28 +148,13 @@ func (e *Engine) Search(ctx context.Context, collection, query string, page, pag
 	return hits, found, nil
 }
 
-func (e *Engine) ReindexAll(ctx context.Context, collection string, docs []search.SearchDoc) error {
+func (e *Engine) ReindexAll(ctx context.Context, collection string, config search.CollectionConfig, docs []search.SearchDoc) error {
 	dropErr := e.dropCollection(ctx, collection)
 	if dropErr != nil {
 		return fmt.Errorf("drop collection: %w", dropErr)
 	}
 
-	fields := make([]api.Field, 0, 4)
-	fields = append(fields, api.Field{Name: "id", Type: "string"})
-	fields = append(fields, api.Field{Name: "collection", Type: "string"})
-	fields = append(fields, api.Field{Name: "code", Type: "string"})
-	fields = append(fields, api.Field{Name: "search_text", Type: "string"})
-	if len(docs) > 0 {
-		for k := range docs[0].Facets {
-			opt := true
-			facet := true
-			fields = append(fields, api.Field{
-				Name: k, Type: "string", Facet: &facet, Optional: &opt,
-			})
-		}
-	}
-
-	schema := &api.CollectionSchema{Name: collection, Fields: fields}
+	schema := &api.CollectionSchema{Name: config.Name, Fields: buildAPIFields(config)}
 	_, err := e.client.Collections().Create(ctx, schema)
 	if err != nil {
 		return fmt.Errorf("create collection: %w", err)
@@ -211,15 +198,36 @@ func (e *Engine) dropCollection(ctx context.Context, name string) error {
 	return nil
 }
 
+func buildAPIFields(config search.CollectionConfig) []api.Field {
+	fields := make([]api.Field, 0, len(config.Fields)+2)
+	fields = append(fields, api.Field{Name: "id", Type: "string"})
+	fields = append(fields, api.Field{Name: "collection", Type: "string"})
+	for _, f := range config.Fields {
+		t := f.Type
+		if t == "" {
+			t = "string"
+		}
+		fields = append(fields, api.Field{
+			Name:     f.Name,
+			Type:     t,
+			Facet:    &f.Facet,
+			Optional: &f.Optional,
+		})
+	}
+	return fields
+}
+
 func typesenseDocFromSearchDoc(doc search.SearchDoc, collection string) map[string]interface{} {
-	out := make(map[string]interface{}, 4+len(doc.Facets))
+	out := make(map[string]interface{}, 4+len(doc.Facets)+len(doc.IndexedFields))
 	for k, v := range doc.Facets {
+		out[k] = v
+	}
+	for k, v := range doc.IndexedFields {
 		out[k] = v
 	}
 	out["id"] = fmt.Sprintf("%s_%s", collection, doc.Code)
 	out["collection"] = collection
 	out["code"] = doc.Code
-	out["search_text"] = doc.SearchText
 	return out
 }
 
@@ -241,8 +249,4 @@ func buildFilterBy(filters map[string]string) string {
 		parts = append(parts, fmt.Sprintf("%s:=`%s`", k, strings.ReplaceAll(v, "`", "\\`")))
 	}
 	return strings.Join(parts, " && ")
-}
-
-func parseScore(s string) (float64, error) {
-	return strconv.ParseFloat(s, 64)
 }

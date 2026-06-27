@@ -3,7 +3,6 @@ package persons
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/cedaesca/patient-finder/internal/search"
 )
@@ -12,11 +11,19 @@ var PersonCollection = search.CollectionConfig{
 	Name: "persons",
 	Fields: []search.Field{
 		{Name: "code", Type: "string"},
-		{Name: "search_text", Type: "string"},
+		{Name: "first_name", Type: "string", Optional: true},
+		{Name: "last_name", Type: "string", Optional: true},
+		{Name: "cedula", Type: "string", Optional: true},
 		{Name: "sex", Type: "string", Facet: true, Optional: true},
 		{Name: "rescue_estado_id", Type: "string", Facet: true, Optional: true},
 		{Name: "rescue_municipio_id", Type: "string", Facet: true, Optional: true},
 		{Name: "rescue_parroquia_id", Type: "string", Facet: true, Optional: true},
+	},
+	Search: search.SearchConfig{
+		QueryBy:        "first_name,last_name,cedula",
+		QueryByWeights: "3,2,4",
+		NumTypos:       "1,1,0",
+		Prefix:         "false",
 	},
 }
 
@@ -38,6 +45,7 @@ type PersonLite struct {
 func NewPersonReindexer(store PersonsLister) search.CollectionReindexer {
 	return search.CollectionReindexer{
 		CollectionName: PersonCollection.Name,
+		Collection:     PersonCollection,
 		BuildDocs: func(ctx context.Context) ([]search.SearchDoc, error) {
 			persons, err := store.ListAll(ctx)
 			if err != nil {
@@ -59,8 +67,8 @@ func NewPersonReindexer(store PersonsLister) search.CollectionReindexer {
 				}
 
 				docs = append(docs, search.SearchDoc{
-					Code:       p.ID,
-					SearchText: buildPersonSearchText(p),
+					Code: p.ID,
+					IndexedFields: buildPersonIndexedFields(p),
 					Facets:     facets,
 				})
 			}
@@ -83,26 +91,26 @@ func PersonToSearchDoc(person *Person) search.SearchDoc {
 		facets["rescue_parroquia_id"] = person.RescueParroquiaID.String()
 	}
 	return search.SearchDoc{
-		Code:       person.ID.String(),
-		SearchText: buildSearchText(person.FirstName, person.LastName, person.Cedula),
+		Code:        person.ID.String(),
+		IndexedFields: buildIndexedFields(person.FirstName, person.LastName, person.Cedula),
 		Facets:     facets,
 	}
 }
 
-func buildSearchText(firstName, lastName, cedula *string) string {
-	var parts []string
+func buildIndexedFields(firstName, lastName, cedula *string) map[string]string {
+	fields := make(map[string]string)
 	if firstName != nil {
-		parts = append(parts, *firstName)
+		fields["first_name"] = *firstName
 	}
 	if lastName != nil {
-		parts = append(parts, *lastName)
+		fields["last_name"] = *lastName
 	}
 	if cedula != nil {
-		parts = append(parts, *cedula)
+		fields["cedula"] = *cedula
 	}
-	return strings.Join(parts, " ")
+	return fields
 }
 
-func buildPersonSearchText(p PersonLite) string {
-	return buildSearchText(p.FirstName, p.LastName, p.Cedula)
+func buildPersonIndexedFields(p PersonLite) map[string]string {
+	return buildIndexedFields(p.FirstName, p.LastName, p.Cedula)
 }

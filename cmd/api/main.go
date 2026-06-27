@@ -123,7 +123,7 @@ func handleReindexCommand(args []string) {
 		if err != nil {
 			return err
 		}
-		return engine.ReindexAll(ctx, r.CollectionName, docs)
+		return engine.ReindexAll(ctx, r.CollectionName, r.Collection, docs)
 	}
 
 	if all || len(targets) == 0 {

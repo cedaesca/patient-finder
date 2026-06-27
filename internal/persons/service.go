@@ -46,6 +46,7 @@ type PersonResponse struct {
 	Notes           string        `json:"notes"`
 	Contacts        *string       `json:"contacts"`
 	CreatedAt       time.Time     `json:"created_at"`
+	Score           *float64      `json:"score,omitempty"`
 }
 
 type CreatePersonInput struct {
@@ -182,7 +183,7 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 	}
 
 	tsFilters := buildTSFilters(filters)
-	hits, total, err := s.searchEngine.Search(ctx, "persons", query, page, pageSize, tsFilters)
+	hits, total, err := s.searchEngine.Search(ctx, "persons", query, page, pageSize, tsFilters, &PersonCollection.Search)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "search persons failure")
@@ -215,9 +216,20 @@ func (s *personsService) Search(ctx context.Context, query string, page, pageSiz
 		byID[row.ID] = personRowToResponse(row)
 	}
 
+	scoreByHit := make(map[uuid.UUID]float64, len(hits))
+	for i, hit := range hits {
+		code, _ := hit.Document["code"].(string)
+		if id, err := uuid.Parse(code); err == nil {
+			scoreByHit[id] = hits[i].Score
+		}
+	}
+
 	results := make([]PersonResponse, 0, len(ids))
 	for _, id := range ids {
 		if p, ok := byID[id]; ok {
+			if score, ok := scoreByHit[id]; ok && score > 0 {
+				p.Score = &score
+			}
 			results = append(results, p)
 		}
 	}
