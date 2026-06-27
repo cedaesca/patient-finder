@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -48,10 +49,18 @@ type PersonRow struct {
 	RescueParroquiaName *string `json:"rescue_parroquia_name"`
 }
 
+type ListPersonsInput struct {
+	CenterID    *uuid.UUID
+	EstadoID    *uuid.UUID
+	MunicipioID *uuid.UUID
+	ParroquiaID *uuid.UUID
+}
+
 type PersonsStore interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*PersonRow, error)
 	GetByIDs(ctx context.Context, ids []uuid.UUID) ([]PersonRow, error)
 	ListAll(ctx context.Context) ([]PersonLite, error)
+	List(ctx context.Context, input ListPersonsInput, page, pageSize int) ([]PersonRow, int, error)
 	Create(ctx context.Context, person *Person) error
 	Update(ctx context.Context, person *Person) error
 	SoftDelete(ctx context.Context, id uuid.UUID) error
@@ -192,6 +201,104 @@ func (s *PostgresPersonsStore) ListAll(ctx context.Context) ([]PersonLite, error
 		result = append(result, p)
 	}
 	return result, rows.Err()
+}
+
+func (s *PostgresPersonsStore) List(ctx context.Context, input ListPersonsInput, page, pageSize int) ([]PersonRow, int, error) {
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "ListPersons")
+	defer span.End()
+
+	baseQuery := `
+		FROM persons p
+		JOIN centers c ON c.id = p.center_id
+		JOIN estados e ON e.id = p.rescue_estado_id
+		JOIN municipios m ON m.id = p.rescue_municipio_id
+		LEFT JOIN parroquias pr ON pr.id = p.rescue_parroquia_id
+		WHERE p.deleted_at IS NULL`
+
+	selectQuery := `
+		SELECT
+			p.id, p.first_name, p.last_name, p.cedula, p.sex, p.age_approx,
+			p.status, p.admitted_at,
+			p.rescue_estado_id, p.rescue_municipio_id, p.rescue_parroquia_id,
+			p.center_id, p.contacts, p.notes, p.created_by, p.created_at, p.updated_at, p.deleted_at,
+			p.source, p.source_id,
+			c.name, c.type, c.contacts,
+			e.name, m.name, pr.name` + baseQuery
+
+	countQuery := `SELECT COUNT(*)` + baseQuery
+
+	var conditions []string
+	var args []interface{}
+
+	if input.CenterID != nil {
+		conditions = append(conditions, "p.center_id = $"+fmt.Sprint(len(args)+1))
+		args = append(args, *input.CenterID)
+	}
+	if input.EstadoID != nil {
+		conditions = append(conditions, "p.rescue_estado_id = $"+fmt.Sprint(len(args)+1))
+		args = append(args, *input.EstadoID)
+	}
+	if input.MunicipioID != nil {
+		conditions = append(conditions, "p.rescue_municipio_id = $"+fmt.Sprint(len(args)+1))
+		args = append(args, *input.MunicipioID)
+	}
+	if input.ParroquiaID != nil {
+		conditions = append(conditions, "p.rescue_parroquia_id = $"+fmt.Sprint(len(args)+1))
+		args = append(args, *input.ParroquiaID)
+	}
+
+	where := ""
+	if len(conditions) > 0 {
+		where = " AND " + strings.Join(conditions, " AND ")
+	}
+
+	exec := database.GetExecutor(ctx, s.db)
+
+	var total int
+	err := exec.QueryRowContext(ctx, countQuery+where, args...).Scan(&total)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "count persons failure")
+		return nil, 0, err
+	}
+
+	offset := (page - 1) * pageSize
+	args = append(args, pageSize, offset)
+	query := selectQuery + where + " ORDER BY p.created_at DESC LIMIT $" + fmt.Sprint(len(args)-1) + " OFFSET $" + fmt.Sprint(len(args))
+
+	rows, err := exec.QueryContext(ctx, query, args...)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "list persons failure")
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	result := make([]PersonRow, 0)
+	for rows.Next() {
+		var r PersonRow
+		if err := rows.Scan(
+			&r.ID, &r.FirstName, &r.LastName, &r.Cedula, &r.Sex, &r.AgeApprox,
+			&r.Status, &r.AdmittedAt,
+			&r.RescueEstadoID, &r.RescueMunicipioID, &r.RescueParroquiaID,
+			&r.CenterID, &r.Contacts, &r.Notes, &r.CreatedBy, &r.CreatedAt, &r.UpdatedAt, &r.DeletedAt,
+			&r.Source, &r.SourceID,
+			&r.CenterName, &r.CenterType, &r.CenterContacts,
+			&r.RescueEstadoName, &r.RescueMunicipioName, &r.RescueParroquiaName); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "scan person failure")
+			return nil, 0, err
+		}
+		result = append(result, r)
+	}
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "iterate persons failure")
+		return nil, 0, err
+	}
+
+	return result, total, nil
 }
 
 func (s *PostgresPersonsStore) Create(ctx context.Context, person *Person) error {
