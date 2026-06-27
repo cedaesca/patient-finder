@@ -66,6 +66,7 @@ type PersonsStore interface {
 	SoftDelete(ctx context.Context, id uuid.UUID) error
 	Count(ctx context.Context) (int, error)
 	LatestUpdatedAt(ctx context.Context) (*time.Time, error)
+	CountSince(ctx context.Context, since time.Time) (int, error)
 }
 
 type PostgresPersonsStore struct {
@@ -440,4 +441,23 @@ func (s *PostgresPersonsStore) LatestUpdatedAt(ctx context.Context) (*time.Time,
 		return nil, err
 	}
 	return updatedAt, nil
+}
+
+func (s *PostgresPersonsStore) CountSince(ctx context.Context, since time.Time) (int, error) {
+	const query = `SELECT count(*) FROM persons WHERE deleted_at IS NULL AND created_at >= $1`
+
+	tracer := otel.Tracer(storeTracerName)
+	ctx, span := tracer.Start(ctx, "CountPersonsSince")
+	defer span.End()
+	database.TagOtelTrace(span, "persons", "SELECT", query)
+
+	exec := database.GetExecutor(ctx, s.db)
+	var total int
+	err := exec.QueryRowContext(ctx, query, since).Scan(&total)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "count persons since failure")
+		return 0, err
+	}
+	return total, nil
 }
