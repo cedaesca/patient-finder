@@ -514,7 +514,8 @@ Búsqueda fuzzy de pacientes via Typesense.
         },
         "notes": "Observaciones del paciente",
         "contacts": "+58 412-1234567",
-        "created_at": "2025-06-26T10:00:00Z"
+        "created_at": "2025-06-26T10:00:00Z",
+        "score": 12345678
       }
     ]
   },
@@ -522,10 +523,13 @@ Búsqueda fuzzy de pacientes via Typesense.
     "page": 1,
     "per_page": 20,
     "total_records": 1,
-    "total_pages": 1
+    "total_pages": 1,
+    "search_time_ms": 12
   }
 }
 ```
+
+El campo `score` indica la relevancia del match (mayor = más relevante). Solo aparece en resultados de búsqueda. El campo `search_time_ms` indica cuánto tardó Typesense en procesar la búsqueda.
 
 #### `GET /persons` (privado — requiere `patients:read`)
 
