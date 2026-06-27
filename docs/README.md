@@ -657,7 +657,7 @@ Crea un nuevo paciente. Valida la jerarquía geográfica de rescate.
 }
 ```
 
-#### `PUT /persons/{id}` (privado — requiere `patients:update` en el centro del paciente)
+#### `PATCH /persons/{id}` (privado — requiere `patients:update` en el centro del paciente)
 
 Actualiza un paciente (PATCH-style, solo campos enviados). Si se cambia el `center_id`, también se verifica permiso en el nuevo centro.
 
